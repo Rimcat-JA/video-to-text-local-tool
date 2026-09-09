@@ -119,6 +119,7 @@ Markdown には画像を埋め込みません。根拠画像は `work/frames/` �
   自動切り替えは実装していません。抽出したコードは文字データとして扱い、実行しません。
 
 対応表は [docs/DESIGN_TRACE.md](docs/DESIGN_TRACE.md) にあります。
+実動画での実測値と、見つかった問題・未確認事項は [docs/RUN_NOTES.md](docs/RUN_NOTES.md) にまとめています。
 
 ---
 

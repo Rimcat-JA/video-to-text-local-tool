@@ -73,6 +73,8 @@ class ScreenState:
     change_ratio: float = 0.0
     changed_tiles: int = 0
     is_blank: bool = False
+    # 変化した範囲 (縮小画像に対する正規化 xyxy)。第 2 段階の局所再認識に使う。
+    change_bbox_norm: list[float] | None = None
     trigger: str = "diff"  # 'diff' | 'small_persistent' | 'periodic' | 'start' | 'resume'
     samples: list[FrameSample] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
@@ -113,13 +115,103 @@ def _tile_counts(mask: np.ndarray, cols: int, rows: int) -> tuple[np.ndarray, np
     return counts, areas
 
 
+def _drop_border(mask: np.ndarray, margin: int) -> np.ndarray:
+    """最外周を差分から除く。
+
+    符号化の端部アーティファクトが最終行・最終列に固定的に現れ、
+    毎回 1 画素幅の塊として検出されてしまうため。
+    """
+    if margin <= 0:
+        return mask
+    out = mask.copy()
+    out[:margin, :] = False
+    out[-margin:, :] = False
+    out[:, :margin] = False
+    out[:, -margin:] = False
+    return out
+
+
+def _significant_mask(mask: np.ndarray, window: int, min_density: float) -> np.ndarray:
+    """符号化ノイズを落とし、塊になっている変化だけを残す。
+
+    実写・画面録画の H.264 では、静止した画面でも量子化ノイズが 1〜2 画素単位で
+    全画面に散る。文字やコードの変化は必ず連続した塊になるため、局所密度で分ける。
+    孤立画素を落とすだけで、1 文字の変更は残る (グリフ内の局所密度は十分高い)。
+    """
+    if window <= 1 or min_density <= 0.0:
+        return mask
+    density = cv2.blur(mask.astype(np.float32), (window, window))
+    return mask & (density >= min_density)
+
+
+def _blobs(mask: np.ndarray, max_blobs: int = 6) -> list[tuple[int, int, int, int, int]]:
+    """変化画素の塊を (x0, y0, x1, y1, 画素数) で返す。大きい順。"""
+    n, _labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    out = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        out.append((int(x), int(y), int(x + w), int(y + h), int(area)))
+    out.sort(key=lambda b: -b[4])
+    return out[:max_blobs]
+
+
+def _patch_similarity(a: np.ndarray, b: np.ndarray, size: int = 24) -> float:
+    """2 つの小片の見た目の近さ。0 に近いほど似ている (0-255)。"""
+    if a.size == 0 or b.size == 0:
+        return 255.0
+    pa = cv2.resize(a, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    pb = cv2.resize(b, (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return float(np.abs(pa - pb).mean())
+
+
+def _looks_like_pointer_move(
+    current: np.ndarray,
+    reference: np.ndarray,
+    blobs: list[tuple[int, int, int, int, int]],
+    *,
+    max_similarity: float,
+) -> bool:
+    """マウスポインタなどの移動か (設計 5.5)。
+
+    移動した物体は「元の位置から消える」「新しい位置に現れる」の 2 つの塊を作り、
+    大きさがほぼ揃う。参照画像の一方の位置の見た目が、現在画像のもう一方の位置に
+    現れていれば、文字内容の変化ではなく移動とみなす。
+
+    塊が 1 つだけの場合は、1 文字の編集と区別できないため移動とみなさない。
+    """
+    if len(blobs) < 2:
+        return False
+    a, b = blobs[0], blobs[1]
+    # 上位 2 つが変化の大半を占める場合だけ、移動として扱う。
+    rest = sum(x[4] for x in blobs[2:])
+    if rest > (a[4] + b[4]) * 0.3:
+        return False
+    area_a, area_b = a[4], b[4]
+    if min(area_a, area_b) <= 0 or max(area_a, area_b) > min(area_a, area_b) * 2.5:
+        return False
+
+    def patch(img: np.ndarray, box: tuple[int, int, int, int, int]) -> np.ndarray:
+        return img[box[1] : box[3], box[0] : box[2]]
+
+    forward = _patch_similarity(patch(reference, a), patch(current, b))
+    backward = _patch_similarity(patch(reference, b), patch(current, a))
+    return min(forward, backward) <= max_similarity
+
+
 def _region_consistent(
-    current: np.ndarray, reference: np.ndarray, bbox: tuple[int, int, int, int], pixel_delta: int
+    current: np.ndarray,
+    reference: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    pixel_delta: int,
+    reference_changed_px: int,
 ) -> bool:
     """保留中の小変化が、同じ内容のまま続いているか。
 
     続いていれば実際の変更 (1 文字編集など)。内容が毎回変わるなら、点滅や
     符号化ノイズ、時計のような周期的表示の可能性が高い。
+
+    許容量は「保留中の変化の画素数」を基準にする。範囲の面積を基準にすると、
+    広く散らばった変化に対して許容量が過大になり、何でも一致と判定してしまう。
     """
     x0, y0, x1, y1 = bbox
     a = current[y0:y1, x0:x1]
@@ -127,7 +219,7 @@ def _region_consistent(
     if a.size == 0 or a.shape != b.shape:
         return False
     changed = int((cv2.absdiff(a, b) > pixel_delta).sum())
-    return changed <= max(2, a.size // 20)
+    return changed <= max(2, reference_changed_px // 5)
 
 
 def _changed_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -182,6 +274,7 @@ class FrameScanner:
             "small_promoted": 0,
             "periodic_boundaries": 0,
             "timestamp_gaps": 0,
+            "pointer_moves": 0,
         }
 
     # ------------------------------------------------------------------ scan
@@ -265,7 +358,9 @@ class FrameScanner:
 
                 assert ref_small is not None
                 diff = cv2.absdiff(small, ref_small)
-                mask = diff > scan.pixel_delta
+                raw_mask = diff > scan.pixel_delta
+                mask = _significant_mask(raw_mask, scan.noise_density_window, scan.min_local_density)
+                mask = _drop_border(mask, scan.border_margin_px)
                 changed_px = int(mask.sum())
                 global_ratio = changed_px / float(mask.size)
                 counts, areas = _tile_counts(mask, scan.tile_cols, scan.tile_rows)
@@ -312,7 +407,37 @@ class FrameScanner:
 
                 bbox = _changed_bbox(mask)
                 small_change = bbox is not None and changed_px <= scan.cursor_max_pixels
+
+                # --- ポインタ・カーソルの移動は文字内容の変化と分ける (設計 5.5) ---
+                if small_change and scan.pointer_move_similarity > 0:
+                    blobs = _blobs(mask)
+                    if _looks_like_pointer_move(
+                        small, ref_small, blobs, max_similarity=scan.pointer_move_similarity
+                    ):
+                        self.stats["pointer_moves"] += 1
+                        self.visual_events.append(
+                            VisualEvent(
+                                id=new_id("vev"),
+                                media_id=self.media_id,
+                                start_us=t_us,
+                                end_us=t_us,
+                                region_ref=";".join(
+                                    ",".join(str(v) for v in b[:4]) for b in blobs
+                                ),
+                                event_kind="pointer",
+                                annotation="同じ見た目の小片が別位置へ移動したため、文字内容の変化としては扱わない",
+                            )
+                        )
+                        # 移動後の見た目を基準にし、同じ移動を繰り返し検出しない。
+                        ref_small = small
+                        last_match_t = t_us
+                        if pending is not None:
+                            self._record_cursor_event(pending, t_us, "cursor")
+                            pending = None
+                        continue
+
                 trigger_flags: list[str] = []
+                change_bbox = bbox
                 carried_samples: list[FrameSample] = []
                 emit_intermediate = False
                 intermediate_ratio = 0.0
@@ -339,7 +464,9 @@ class FrameScanner:
                     union = _bbox_union(pending["bbox"], bbox)
                     elapsed = t_us - pending["start_us"]
                     grew = changed_px > 3 * pending["changed_px"] + scan.min_changed_pixels
-                    consistent = _region_consistent(small, pending["frame"], union, scan.pixel_delta)
+                    consistent = _region_consistent(
+                        small, pending["frame"], union, scan.pixel_delta, pending["changed_px"]
+                    )
                     if grew:
                         # 変化が広がっている = 入力が進んでいる。実変化として扱う。
                         trigger_flags.append("small_change_grew")
@@ -365,6 +492,7 @@ class FrameScanner:
                     ratio = max(pending["ratio"], global_ratio)
                     tiles_n = max(pending["tiles"], changed_tiles)
                     carried_samples = list(pending["samples"])
+                    change_bbox = _bbox_union(pending["bbox"], bbox) if bbox else pending["bbox"]
                     pending = None
                 else:
                     change_t = t_us
@@ -441,6 +569,14 @@ class FrameScanner:
                 state.changed_tiles = tiles_n
                 state.flags.extend(trigger_flags)
                 state.samples = carried_samples
+                if change_bbox is not None:
+                    mh, mw = mask.shape
+                    state.change_bbox_norm = [
+                        change_bbox[0] / mw,
+                        change_bbox[1] / mh,
+                        change_bbox[2] / mw,
+                        change_bbox[3] / mh,
+                    ]
                 ref_small = small
                 last_match_t = t_us
                 last_sample_t = None
@@ -710,6 +846,8 @@ def _persist_state(store: Store, scanner: FrameScanner, media_id: str, state: Sc
             if s.t_us != best.t_us:
                 evidence_refs.append({"t_us": s.t_us, "role": "alternate", "sharpness": s.sharpness})
 
+    if state.change_bbox_norm is not None:
+        evidence_refs.append({"role": "change_region", "bbox_norm": state.change_bbox_norm})
     flags = list(state.flags)
     flags.append(FLAG_NOT_EXTRACTED)
     occ = ScreenOccurrence(

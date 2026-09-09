@@ -139,6 +139,9 @@ class VisionExtractor:
             "crop_rereads": 0,
             "tiles": 0,
             "reread_mismatch": 0,
+            "region_checks": 0,
+            "region_merged": 0,
+            "region_changed": 0,
         }
 
     # ------------------------------------------------------------------ keys
@@ -313,6 +316,67 @@ class VisionExtractor:
             flags.append(FLAG_UNREADABLE)
         content = self._make_content(regions, screen_kind, context, structure_notes, flags, attempt_ids)
         return content, flags
+
+    # --------------------------------------------- 第 2 段階: 局所の再認識
+    def region_text_unchanged(
+        self, prev_occ: ScreenOccurrence, occ: ScreenOccurrence
+    ) -> tuple[bool | None, list[str]]:
+        """変化した領域だけを読み直し、文字が実際に変わったかを確かめる (設計 5.2)。
+
+        戻り値は (変化なし?, attempt_ids)。判定できない場合は None を返し、
+        統合を保留して全画面パスへ進む。
+        """
+        region = next((e for e in occ.evidence_refs if e.get("role") == "change_region"), None)
+        if region is None or not region.get("bbox_norm"):
+            return None, []
+        prev_ref = next((e for e in prev_occ.evidence_refs if e.get("role") == "representative"), None)
+        cur_ref = next((e for e in occ.evidence_refs if e.get("role") == "representative"), None)
+        if prev_ref is None or cur_ref is None:
+            return None, []
+
+        x0n, y0n, x1n, y1n = region["bbox_norm"]
+        if (x1n - x0n) * (y1n - y0n) > self.vcfg.region_check_max_area:
+            return None, []  # 広い変化は全画面で読む
+
+        attempt_ids: list[str] = []
+        texts: list[str | None] = []
+        for ref in (prev_ref, cur_ref):
+            path = self.work_dir / ref["path"]
+            if not path.exists():
+                return None, attempt_ids
+            image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if image is None:
+                return None, attempt_ids
+            height, width = image.shape[:2]
+            x0, y0, x1, y1 = _clamp_bbox([x0n, y0n, x1n, y1n], width, height, self.vcfg.region_check_padding)
+            crop = image[y0:y1, x0:x1]
+            if crop.size == 0:
+                return None, attempt_ids
+            crop, upscale = self._maybe_upscale(crop)
+            image_hash = ref.get("image_hash") or sha256_bytes(path.read_bytes())
+            payload, status, attempt_id = self._call(
+                crop,
+                "crop",
+                ref.get("frame_id", ""),
+                image_hash,
+                (x0, y0, x1, y1),
+                {"upscale": round(upscale, 4), "purpose": "region_check", "padding": self.vcfg.region_check_padding},
+            )
+            if attempt_id:
+                attempt_ids.append(attempt_id)
+            if payload is None or status != STATUS_OK:
+                return None, attempt_ids
+            lines = list(payload.get("lines") or [])
+            if not lines and payload.get("text"):
+                lines = str(payload["text"]).split("\n")
+            texts.append("\n".join(lines))
+
+        self.stats["region_checks"] += 1
+        # 記号・字下げを勝手に同一視しないため、コードとして厳密に比較する。
+        same = normalize_for_compare(texts[0] or "", is_code=True) == normalize_for_compare(
+            texts[1] or "", is_code=True
+        )
+        return same, attempt_ids
 
     def _prepare_full(self, image: np.ndarray) -> tuple[np.ndarray, float]:
         height, width = image.shape[:2]
@@ -576,6 +640,7 @@ def run_vision(
     store.clear_reviews_by_reason_prefix(media_id, "vision:")
 
     extractor.stats["occurrences"] = len(occurrences)
+    prev_extracted: ScreenOccurrence | None = None
     for i, occ in enumerate(occurrences):
         if occ.id in done_ids and occ.content_id:
             continue
@@ -604,6 +669,26 @@ def run_vision(
             done_ids.add(occ.id)
             continue
 
+        # 設計 5.2 第 2 段階: 変化した領域だけを先に読み、文字が同じなら全画面パスを省く。
+        if cfg.vision.region_check and prev_extracted is not None:
+            same, region_attempts = extractor.region_text_unchanged(prev_extracted, occ)
+            if same is True:
+                extractor.stats["region_merged"] += 1
+                occ.content_id = prev_extracted.content_id
+                occ.quality_flags = sorted(
+                    (set(occ.quality_flags) | {"same_text_as_previous_by_region_check"})
+                    - {FLAG_NOT_EXTRACTED}
+                )
+                occ.evidence_refs = occ.evidence_refs + [
+                    {"role": "region_check", "attempt_ids": region_attempts, "result": "unchanged"}
+                ]
+                store.upsert_occurrence(occ)
+                prev_extracted = occ
+                done_ids.add(occ.id)
+                continue
+            if same is False:
+                extractor.stats["region_changed"] += 1
+
         content, flags = extractor.extract_occurrence(occ)
         if content is None:
             extractor.stats["failed"] += 1
@@ -628,6 +713,7 @@ def run_vision(
         store.upsert_occurrence(occ)
         extractor.stats["extracted"] += 1
         _add_content_reviews(store, media_id, occ, content)
+        prev_extracted = occ
         done_ids.add(occ.id)
 
         if (i + 1) % 10 == 0:

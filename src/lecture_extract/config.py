@@ -29,9 +29,18 @@ class ScanConfig:
     # 比率だけで判定すると、1080p のコード 1 文字の変更が閾値に届かない。
     # 変化画素の実数でも判定し、小さな変更を落とさない (設計 5.2 / 14.3)。
     min_changed_pixels: int = 10  # 全画面で、この画素数以上の変化を候補にする
+    # 符号化ノイズは 1〜2 画素が全画面に散る。文字の変化は塊になる。
+    # 局所密度で両者を分け、散らばった孤立画素を変化候補から除く。
+    noise_density_window: int = 5  # 局所密度を測る窓 (画素)
+    # 画面の最外周には符号化の端部アーティファクトが固定的に出る。差分から除く幅 (縮小画像上)。
+    border_margin_px: int = 2
+    min_local_density: float = 0.2  # 窓内でこの割合以上が変化していれば本物の変化とみなす
     min_changed_pixels_tile: int = 8  # 1 タイルで、この画素数以上の変化を候補にする
     min_changed_tiles: int = 1
     cursor_max_pixels: int = 900  # これ以下の変化画素数は「小さな変化」として保留判定へ回す
+    # マウスポインタの移動判定。移動した物体は「消えた位置」「現れた位置」の 2 つの塊を作る。
+    # 参照画像の一方の見た目が現在画像のもう一方に現れていれば移動とみなす (0 で無効)。
+    pointer_move_similarity: float = 22.0  # 平均輝度差 (0-255) の上限
     stable_us: int = 500_000  # 本文表示候補とみなす安定時間 (0.5 秒)
     min_state_us: int = 0  # 0 未満の状態も破棄しない。短時間表示も保存する
     cursor_max_area_ratio: float = 0.0015  # カーソル相当とみなす変化面積の上限
@@ -61,18 +70,29 @@ class VisionConfig:
     temperature: float = 0.0
     seed: int = 42
     max_tokens: int = 4096
+    # クロップは 1 領域分しか転記しないので、全画面より小さい上限で十分。
+    # 上限を絞ることで、繰り返しループに入ったときの損失時間を抑える。
+    crop_max_tokens: int = 1024
+    # 同じ記号を延々と生成する退行を抑える。1.0 で無効。
+    repeat_penalty: float = 1.05
     request_timeout_s: int = 600
     concurrency: int = 1  # 設計 3.3: GPU 1 枚につき重い推論は 1 件
     crop_reread_kinds: list[str] = field(
         default_factory=lambda: ["code", "terminal_output", "table", "formula", "caption"]
     )
     crop_reread_all_body_when_downscaled: bool = True
+    # 設計 5.2 第 2 段階: 変化した領域だけを読み直し、文字が変わったか確かめる。
+    region_check: bool = True
+    region_check_max_area: float = 0.05  # 画面に対するこの割合以下の変化だけを局所判定にする
+    region_check_padding: float = 0.6  # 変化範囲の周囲をどれだけ広げて読むか
     crop_padding_ratio: float = 0.02
     crop_min_upscale: float = 1.0
     crop_max_pixels: int = 1_600 * 1_600
     tile_overlap_ratio: float = 0.18  # 設計 6.2: 15-20% を初期候補
     tile_max_height_px: int = 1_100
-    max_image_long_side: int = 1_600  # 全体パス用。領域別読み取りは原寸クロップを使う
+    # 全体パス用の上限。1080p を縮小しないことで、全本文領域の再認識を避ける。
+    # 領域別読み取りは常に原寸クロップを使う。
+    max_image_long_side: int = 1_920
     retry_limit: int = 2  # 設計 12.2: 実行時エラーの初期再試行上限
     prompt_version: str = "v1"
 

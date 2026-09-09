@@ -162,6 +162,8 @@ class LlamaServerVision:
             "temperature": self.cfg.temperature,
             "seed": self.cfg.seed,
             "max_tokens": self.cfg.max_tokens,
+            "crop_max_tokens": self.cfg.crop_max_tokens,
+            "repeat_penalty": self.cfg.repeat_penalty,
             "n_ctx": self.cfg.n_ctx,
             "max_image_long_side": self.cfg.max_image_long_side,
             "image_min_tokens": self.cfg.image_min_tokens,
@@ -219,7 +221,10 @@ class LlamaServerVision:
             ],
             "temperature": self.cfg.temperature,
             "seed": self.cfg.seed,
-            "max_tokens": self.cfg.max_tokens,
+            # クロップは 1 領域分しか転記しないので上限を絞る。
+            # 繰り返しループに入ったときの損失時間を抑える目的も兼ねる。
+            "max_tokens": self.cfg.max_tokens if kind == "full" else self.cfg.crop_max_tokens,
+            "repeat_penalty": self.cfg.repeat_penalty,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "screen_extraction", "schema": schema, "strict": True},
