@@ -1,4 +1,4 @@
-﻿<#
+﻿﻿<#
 .SYNOPSIS
     whisper.cpp を用意する（初回のみ・ネット接続が必要）。
 
@@ -82,8 +82,13 @@ if ($Prebuilt) {
     Expand-Archive -Path $zip -DestinationPath $dest -Force
     Remove-Item $zip -Force
 
-    $cli = Get-ChildItem -Path $dest -Recurse -Include 'whisper-cli.exe', 'main.exe' -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+    # main.exe は互換用の小さなスタブなので、whisper-cli.exe を優先する。
+    $cli = $null
+    foreach ($name in @('whisper-cli.exe', 'main.exe')) {
+        $found = Get-ChildItem -Path $dest -Recurse -Filter $name -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { $cli = $found; break }
+    }
     if (-not $cli) {
         Write-Host '実行ファイルが見つかりません。展開先を確認してください。' -ForegroundColor Red
         Get-ChildItem -Path $dest -Recurse -Filter '*.exe' | Select-Object -ExpandProperty FullName
