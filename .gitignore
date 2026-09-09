@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+/work/
+/out/
+/models/
+/tmp/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.egg-info/
+build/
+dist/
+third_party/
