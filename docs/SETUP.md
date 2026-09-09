@@ -85,24 +85,39 @@ VRAM が足りない場合の順序は設計 3.2 の通りです。同時要求�
 
 ### 2.1 実行ファイル
 
-いずれかを選びます。
+**whisper.cpp の公式リリースには、Windows 向けの Vulkan ビルド済みバイナリがありません。**
+配布されているのは CPU 版・BLAS 版・CUDA 版（NVIDIA 専用）だけです（2026-09-09 時点で確認）。
+AMD GPU で GPU 推論するには、自分でビルドする必要があります。
 
-**(a) 公式のビルド済みバイナリを使う**
-
-<https://github.com/ggml-org/whisper.cpp/releases> を開き、Windows x64 向けの
-アーカイブ（Vulkan 版があればそれ）を展開して、`whisper-cli.exe` の場所を控えます。
-リリースごとに資産名が異なるため、ページで実際の名前を確認してください。
-
-**(b) 自分でビルドする（Vulkan）**
+**(a) ビルド済みの CPU 版を使う — コンパイラ不要、すぐ試せる**
 
 ```bash
-git clone https://github.com/ggml-org/whisper.cpp
-cd whisper.cpp
-cmake -B build -DGGML_VULKAN=ON
-cmake --build build -j --config Release
+powershell -ExecutionPolicy Bypass -File scripts\setup_whisper_cpp.ps1 -Prebuilt
 ```
 
-`build/bin/Release/whisper-cli.exe` が生成されます。
+公式リリースの `whisper-bin-x64.zip`（8MB 前後）を `third_party\whisper-bin-x64\` へ展開し、
+`whisper-cli.exe` の場所を表示します。GPU は使いません。
+
+設計 3.2 の通り CPU のみの構成も維持しますが、実用速度は測定して判断します。
+まずこれで短い区間を通し、処理時間が足りなければ (b) へ進んでください。
+
+**(b) 自分でビルドする（Vulkan）— AMD GPU を使う場合**
+
+必要なもの:
+
+```bash
+winget install Git.Git; winget install Kitware.CMake; winget install Microsoft.VisualStudio.2022.BuildTools
+```
+
+Visual Studio Build Tools は「C++ によるデスクトップ開発」ワークロードを選択してください。
+あわせて Vulkan SDK が必要です: <https://vulkan.lunarg.com/sdk/home>
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\setup_whisper_cpp.ps1
+```
+
+`third_party\whisper.cpp\build\bin\Release\whisper-cli.exe` が生成されます。
+`-Cpu` を付けると Vulkan なしでビルドします。
 
 ### 2.2 モデル
 
