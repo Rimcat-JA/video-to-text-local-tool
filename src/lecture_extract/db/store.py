@@ -63,6 +63,9 @@ class Store:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # ステージを別プロセスで並行実行する場合に備える。WAL は書き込みを 1 つに
+        # 直列化するため、待たずに諦めると「database is locked」で落ちる。
+        self.conn.execute("PRAGMA busy_timeout = 60000")
         self._init_schema()
 
     def _init_schema(self) -> None:

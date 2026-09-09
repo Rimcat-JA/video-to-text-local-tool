@@ -70,6 +70,8 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         cfg.vision.n_gpu_layers = args.ngl
     if getattr(args, "image_min_tokens", None) is not None:
         cfg.vision.image_min_tokens = args.image_min_tokens
+    if getattr(args, "extract_min_state", None) is not None:
+        cfg.vision.extract_min_state_us = parse_time(args.extract_min_state)
 
     if getattr(args, "asr_adapter", None):
         cfg.asr.adapter = args.asr_adapter
@@ -398,6 +400,12 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--manage-vision-server", action="store_true", help="llama-server を起動・停止まで行う")
     p_run.add_argument("--n-ctx", type=int, default=None)
     p_run.add_argument("--ngl", type=int, default=None, help="GPU へ載せる層数")
+    p_run.add_argument(
+        "--extract-min-state",
+        default=None,
+        metavar="SEC",
+        help="VLM 抽出の対象にする最小の表示時間 (既定 1.0)。これより短い状態も期間は残る",
+    )
     p_run.add_argument(
         "--image-min-tokens",
         type=int,

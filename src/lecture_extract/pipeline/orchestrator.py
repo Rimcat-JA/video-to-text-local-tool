@@ -65,6 +65,16 @@ _CONFIG_STAGE = {
 }
 
 
+class _NullLock:
+    """ロックを取らない場合の入れ物。"""
+
+    def __enter__(self) -> "_NullLock":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -257,7 +267,8 @@ class Orchestrator:
         if hasattr(adapter, "ensure_ready"):
             adapter.ensure_ready()
         self.asr_info = adapter.describe()
-        lock = GpuLock(self.work_dir / "gpu.lock")
+        # CPU ビルドの ASR は GPU を使わないので、ロックを取らない。
+        lock = GpuLock(self.work_dir / "gpu.lock") if self.cfg.asr.uses_gpu else _NullLock()
         try:
             with lock:
                 self._run_stage(

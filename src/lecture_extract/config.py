@@ -59,7 +59,9 @@ class VisionConfig:
     server_url: str = "http://127.0.0.1:8080"
     model_path: str = ""
     mmproj_path: str = ""
-    model_alias: str = "qwen3-vl-8b-instruct-q4_k_m"
+    # 空ならモデルファイル名から決める。固定文字列にすると、モデルを差し替えても
+    # 抽出履歴に同じ名前が記録され、どのモデルの結果か分からなくなる (設計 13.2)。
+    model_alias: str = ""
     manage_server: bool = False  # True なら llama-server を起動・停止まで面倒を見る
     server_binary: str = "llama-server"
     n_ctx: int = 8192
@@ -80,10 +82,16 @@ class VisionConfig:
     crop_reread_kinds: list[str] = field(
         default_factory=lambda: ["code", "terminal_output", "table", "formula", "caption"]
     )
+    # 全画面パスが原寸で読めている場合、同じ領域をもう一度読んでも解像度は上がらない。
+    # 原寸クロップが効くのは、細かい文字が密に並ぶ画面 (コードエディタ・端末など)。
+    # 画面種別で絞り、スライドでは全画面パスの結果を採用する (設計 6.1 の手順 3)。
+    crop_reread_screen_kinds: list[str] = field(
+        default_factory=lambda: ["code_editor", "terminal", "browser", "mixed"]
+    )
     crop_reread_all_body_when_downscaled: bool = True
     # 設計 5.2 第 2 段階: 変化した領域だけを読み直し、文字が変わったか確かめる。
     region_check: bool = True
-    region_check_max_area: float = 0.05  # 画面に対するこの割合以下の変化だけを局所判定にする
+    region_check_max_area: float = 0.15  # 画面に対するこの割合以下の変化だけを局所判定にする
     region_check_padding: float = 0.6  # 変化範囲の周囲をどれだけ広げて読むか
     crop_padding_ratio: float = 0.02
     crop_min_upscale: float = 1.0
@@ -95,6 +103,9 @@ class VisionConfig:
     max_image_long_side: int = 1_920
     retry_limit: int = 2  # 設計 12.2: 実行時エラーの初期再試行上限
     prompt_version: str = "v1"
+    # VLM 抽出の対象にする最小の表示時間。これより短い状態も期間としては必ず保存し、
+    # 「短時間表示・全文未確定」として残す (設計 5.4)。
+    extract_min_state_us: int = 1_000_000
 
 
 @dataclass
@@ -113,6 +124,9 @@ class AsrConfig:
     extra_args: list[str] = field(default_factory=list)
     retry_limit: int = 2
     initial_prompt: str = ""
+    # GPU を使うビルドかどうか。CPU ビルドで GPU ロックを取ると、GPU を使わないのに
+    # 画像認識をブロックしてしまう (設計 12.2 のロックは GPU 競合を避けるためのもの)。
+    uses_gpu: bool = False
 
 
 @dataclass

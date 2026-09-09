@@ -45,6 +45,8 @@ def _ensure_loopback(url: str) -> None:
 class LlamaServerVision:
     def __init__(self, cfg: VisionConfig, work_dir: str | Path):
         self.cfg = cfg
+        if not cfg.model_alias:
+            cfg.model_alias = Path(cfg.model_path).stem.lower() or "vlm"
         self.work_dir = Path(work_dir)
         self.hash_cache = self.work_dir / "model_hashes.json"
         _ensure_loopback(cfg.server_url)

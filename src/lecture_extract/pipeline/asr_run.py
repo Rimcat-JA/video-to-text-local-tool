@@ -119,6 +119,7 @@ def run_asr(
             continue
 
         stats["segments_raw"] += len(result.segments)
+        chunk_utts: list[Utterance] = []
         for seg in result.segments:
             abs_start = chunk.start_us + seg.start_us
             abs_end = chunk.start_us + seg.end_us
@@ -153,7 +154,14 @@ def run_asr(
                 source="asr",
                 chunk_id=chunk.chunk_id,
             )
-            kept.append(utt)
+            chunk_utts.append(utt)
+
+        # チャンクを完了として記録する前に、その発話を保存する。
+        # 先にチェックポイントだけ進めると、中断時に「処理済みなのに発話が無い」
+        # 区間ができ、再開しても復元されない。
+        for utt in chunk_utts:
+            store.upsert_utterance(utt)
+        kept.extend(chunk_utts)
 
         done_chunks.add(chunk.chunk_id)
         stats["chunks_done"] += 1

@@ -57,8 +57,15 @@ def sha256_file_cached(path: str | Path, cache_path: str | Path) -> str:
         return entry["sha256"]
     digest = sha256_file(path)
     cache[key] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest}
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cache_path.with_suffix(cache_path.suffix + ".partial")
-    tmp.write_text(_json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(cache_path)
+    # 別プロセスが同時に書いても壊れないよう、一時ファイル名をプロセスごとに分ける。
+    # このファイルは速度のためのキャッシュなので、書けなくても処理は続行する。
+    try:
+        import os as _os
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(f"{cache_path.suffix}.{_os.getpid()}.partial")
+        tmp.write_text(_json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(cache_path)
+    except OSError:
+        pass
     return digest

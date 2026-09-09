@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +60,7 @@ def extract_master_wav(cfg: RunConfig, probe: MediaProbe, media_id: str) -> Path
     if out.exists() and out.stat().st_size > 44:
         log.info("既存の音声中間ファイルを使います: %s", out.name)
         return out
-    tmp = out.with_suffix(".wav.partial")
+    tmp = out.with_suffix(f".{os.getpid()}.wav.partial")
     cmd = [
         ffmpeg_path(),
         "-v",
@@ -99,7 +100,7 @@ def read_wav(path: Path) -> np.ndarray:
 
 
 def write_wav(path: Path, samples: np.ndarray) -> None:
-    tmp = path.with_suffix(path.suffix + ".partial")
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.partial")
     with wave.open(str(tmp), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)

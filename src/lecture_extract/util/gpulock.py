@@ -9,10 +9,46 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _process_alive(pid: int) -> bool:
+    """プロセスが生きているか。
+
+    Windows の os.kill は signal 0 でも TerminateProcess を呼ぶため、生存確認には
+    使えない (相手を終了させてしまう)。OS ごとに安全な方法で確認する。
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        SYNCHRONIZE = 0x00100000
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        WAIT_OBJECT_0 = 0x0
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(
+            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(pid)
+        )
+        if not handle:
+            return False  # 開けない = 既に存在しない
+        try:
+            # 終了済みのプロセスハンドルはシグナル状態になる。
+            return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 class GpuLock:
@@ -54,15 +90,7 @@ class GpuLock:
             return False
         if pid == os.getpid():
             return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False
-        except OSError:
-            return False
-        return False
+        return not _process_alive(pid)
 
     def release(self) -> None:
         if self._fd is not None:

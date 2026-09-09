@@ -12,7 +12,8 @@ from typing import Iterator
 def atomic_write(path: str | Path, mode: str = "w", encoding: str | None = "utf-8") -> Iterator:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".partial")
+    # 一時ファイル名はプロセスごとに分ける（並行実行時の衝突を避ける）。
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.partial")
     kwargs = {} if "b" in mode else {"encoding": encoding, "newline": "\n"}
     fh = open(tmp, mode, **kwargs)
     try:

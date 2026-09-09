@@ -299,11 +299,18 @@ class VisionExtractor:
         downscaled = scale < 0.999
         if downscaled:
             flags.append(FLAG_LOW_RESOLUTION)
+        screen_kind_for_crop = payload.get("screen_kind", "other")
+        code_screen = screen_kind_for_crop in self.vcfg.crop_reread_screen_kinds
         for region in regions:
-            need = region.kind in self.vcfg.crop_reread_kinds or (
-                downscaled
-                and self.vcfg.crop_reread_all_body_when_downscaled
-                and region.role == ROLE_MATERIAL_BODY
+            uncertain = bool(region.unreadable) or FLAG_UNREADABLE in region.flags
+            need = (
+                (region.kind in self.vcfg.crop_reread_kinds and code_screen)
+                or uncertain
+                or (
+                    downscaled
+                    and self.vcfg.crop_reread_all_body_when_downscaled
+                    and region.role == ROLE_MATERIAL_BODY
+                )
             )
             if not need:
                 continue
@@ -650,7 +657,9 @@ def run_vision(
             store.upsert_occurrence(occ)
             done_ids.add(occ.id)
             continue
-        if not should_extract(occ.state_kind, occ.end_us - occ.start_us):
+        if not should_extract(
+            occ.state_kind, occ.end_us - occ.start_us, cfg.vision.extract_min_state_us
+        ):
             extractor.stats["skipped_short"] += 1
             occ.quality_flags = sorted(set(occ.quality_flags) | {FLAG_NOT_EXTRACTED, "short_or_transition"})
             store.upsert_occurrence(occ)

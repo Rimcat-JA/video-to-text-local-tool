@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -50,10 +51,16 @@ SAMPLE_MIN_GAP_US = 200_000
 
 @dataclass
 class FrameSample:
+    """代表フレームの候補。
+
+    走査中は PNG へ圧縮せず ndarray のまま保持する。1 状態につき最大 5 枚を
+    候補にするが、実際に保存するのは 1 枚だけなので、圧縮は選定後に 1 回だけ行う。
+    """
+
     t_us: int
     pts: int | None
     sharpness: float
-    png: bytes
+    image: np.ndarray
     width: int
     height: int
 
@@ -629,15 +636,12 @@ class FrameScanner:
         except Exception as exc:  # pragma: no cover - デコード失敗時
             log.warning("フレームの変換に失敗しました t=%dus: %s", t_us, exc)
             return
-        ok, buf = cv2.imencode(".png", rgb, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        if not ok:
-            return
         state.samples.append(
             FrameSample(
                 t_us=t_us,
                 pts=frame.pts,
                 sharpness=sharpness,
-                png=buf.tobytes(),
+                image=rgb,
                 width=rgb.shape[1],
                 height=rgb.shape[0],
             )
@@ -700,15 +704,19 @@ class FrameScanner:
             return None
         candidates = state.samples[1:] if len(state.samples) > 1 else state.samples
         best = max(candidates, key=lambda s: s.sharpness)
-        digest = sha256_bytes(best.png)
+        ok, buf = cv2.imencode(".png", best.image, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        if not ok:
+            return None
+        png = buf.tobytes()
+        digest = sha256_bytes(png)
         rel = Path("frames") / self.media_id / f"{best.t_us:012d}_{digest[:12]}.png"
         abs_path = self.frames_dir.parent.parent / rel
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         if not abs_path.exists():
-            tmp = abs_path.with_suffix(".png.partial")
-            tmp.write_bytes(best.png)
+            tmp = abs_path.with_suffix(f".{os.getpid()}.partial")
+            tmp.write_bytes(png)
             tmp.replace(abs_path)
-        return str(rel).replace("\\", "/"), best.png
+        return str(rel).replace("\\", "/"), png
 
 
 def run_frame_scan(
@@ -819,7 +827,29 @@ def run_frame_scan(
 
 
 def _persist_state(store: Store, scanner: FrameScanner, media_id: str, state: ScreenState) -> str:
-    saved = scanner.save_representative(state)
+    # 遷移・空画面は VLM の対象にしないので、代表画像を書き出さない。
+    # 時刻は残すので、必要になれば元動画とハッシュから再生成できる (設計 12.3)。
+    keep_image = state.state_kind not in (STATE_TRANSITION, STATE_BLANK)
+    saved = scanner.save_representative(state) if keep_image else None
+    if not keep_image and state.samples:
+        best = max(state.samples, key=lambda s: s.sharpness)
+        frame_id = store.add_frame(
+            {
+                "id": new_id("frm"),
+                "media_id": media_id,
+                "pts": best.pts,
+                "time_base_num": None,
+                "time_base_den": None,
+                "t_us": best.t_us,
+                "image_hash": None,
+                "crop": None,
+                "evidence_ref": None,
+                "kind": "representative_not_saved",
+                "width": best.width,
+                "height": best.height,
+            }
+        )
+        state.samples = []
     evidence_refs: list[dict[str, Any]] = []
     if saved is not None:
         rel, png = saved
@@ -868,10 +898,12 @@ def _persist_state(store: Store, scanner: FrameScanner, media_id: str, state: Sc
     return store.upsert_occurrence(occ)
 
 
-def should_extract(state_kind: str, duration_us: int) -> bool:
+def should_extract(
+    state_kind: str, duration_us: int, min_state_us: int = EXTRACT_MIN_STATE_US
+) -> bool:
     """VLM 抽出の対象にするか。対象外でも期間は必ず保存されている。"""
     if state_kind == STATE_BLANK:
         return False
     if state_kind == STATE_TRANSITION:
         return False
-    return duration_us >= EXTRACT_MIN_STATE_US
+    return duration_us >= min_state_us
