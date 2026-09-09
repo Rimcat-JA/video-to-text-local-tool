@@ -68,6 +68,8 @@ def build_config(args: argparse.Namespace) -> RunConfig:
         cfg.vision.n_ctx = args.n_ctx
     if getattr(args, "ngl", None) is not None:
         cfg.vision.n_gpu_layers = args.ngl
+    if getattr(args, "image_min_tokens", None) is not None:
+        cfg.vision.image_min_tokens = args.image_min_tokens
 
     if getattr(args, "asr_adapter", None):
         cfg.asr.adapter = args.asr_adapter
@@ -396,6 +398,12 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--manage-vision-server", action="store_true", help="llama-server を起動・停止まで行う")
     p_run.add_argument("--n-ctx", type=int, default=None)
     p_run.add_argument("--ngl", type=int, default=None, help="GPU へ載せる層数")
+    p_run.add_argument(
+        "--image-min-tokens",
+        type=int,
+        default=None,
+        help="画像トークンの下限 (Qwen-VL は 1024 以上が推奨。0 で指定しない)",
+    )
     p_run.add_argument("--asr-adapter", choices=["whisper_cpp", "stub"], default=None)
     p_run.add_argument("--asr-model", default=None, help="whisper.cpp の ggml モデル")
     p_run.add_argument("--asr-binary", default=None, help="whisper-cli の場所")

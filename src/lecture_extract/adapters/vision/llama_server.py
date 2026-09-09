@@ -96,6 +96,9 @@ class LlamaServerVision:
             "--alias",
             cfg.model_alias,
         ]
+        if cfg.image_min_tokens > 0:
+            # Qwen-VL は画像トークンが少ないと読み取り精度が落ちるとされている。
+            cmd += ["--image-min-tokens", str(cfg.image_min_tokens)]
         log_path = self.work_dir / "logs" / "llama-server.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log.info("llama-server を起動します: %s", " ".join(cmd))
@@ -161,6 +164,7 @@ class LlamaServerVision:
             "max_tokens": self.cfg.max_tokens,
             "n_ctx": self.cfg.n_ctx,
             "max_image_long_side": self.cfg.max_image_long_side,
+            "image_min_tokens": self.cfg.image_min_tokens,
         }
         info["params_hash"] = config_hash(info["params"])
         info["model_revision"] = f"{self.cfg.model_alias}@{info['model_sha256'][:16]}"

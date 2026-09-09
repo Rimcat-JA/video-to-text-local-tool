@@ -55,6 +55,9 @@ class VisionConfig:
     server_binary: str = "llama-server"
     n_ctx: int = 8192
     n_gpu_layers: int = 99
+    # llama.cpp が Qwen-VL について警告する下限。文字の読み取り精度に効く。
+    # 0 なら指定しない (ランタイムの既定に任せる)。
+    image_min_tokens: int = 1024
     temperature: float = 0.0
     seed: int = 42
     max_tokens: int = 4096
