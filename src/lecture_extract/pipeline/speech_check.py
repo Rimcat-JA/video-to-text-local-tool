@@ -40,9 +40,16 @@ _COMMON = {
 # 発話の周辺で画面に出ていれば「確認済み」とみなす時間幅
 NEARBY_US = 120_000_000  # 前後 2 分
 
-FLAG_CONFIRMED = "terms_confirmed_on_screen"
-FLAG_UNVERIFIED = "terms_not_found_on_screen"
-FLAG_NO_TERMS = "no_technical_terms"
+# 何を根拠に確認したかが分かる名前にする。これらは「画面との用語照合結果」であり、
+# 音声認識が正しいかどうかの判定ではない。画面に無い語を話すことも、
+# 誤認識した語がたまたま画面に存在することもある (設計 7.2)。
+FLAG_CONFIRMED = "term_match:screen_nearby"  # 同時期の画面に同じ語があった
+FLAG_ELSEWHERE = "term_match:screen_elsewhere"  # 講義の別の箇所の画面にあった
+FLAG_UNVERIFIED = "term_match:not_on_screen"  # 画面には見当たらない
+FLAG_NO_TERMS = "term_match:no_terms"  # 照合対象の専門語が無い
+
+# 音声そのものとの照合は行っていない。行った場合に使う値を予約しておく。
+FLAG_AUDIO_UNCHECKED = "audio_verify:unchecked"
 
 
 # 技術語らしい形。記号や大文字混じり、数字を含む語は一般語ではない。
@@ -109,7 +116,15 @@ def run_speech_check(store: Store, media_id: str) -> dict[str, Any]:
         stats["utterances"] += 1
         # 発話側は「技術語らしい語」か「画面に出ている語」だけを対象にする。
         terms = _terms(utt.text_raw, vocabulary=all_screen_terms)
-        flags = [f for f in utt.quality_flags if not f.startswith("terms_") and f != FLAG_NO_TERMS]
+        flags = [
+            f
+            for f in utt.quality_flags
+            if not f.startswith("term_match:")
+            and not f.startswith("terms_")
+            and not f.startswith("audio_verify:")
+        ]
+        # 元音声との照合は未実施。未検査であることを明示する。
+        flags.append(FLAG_AUDIO_UNCHECKED)
         if not terms:
             utt.quality_flags = sorted(set(flags) | {FLAG_NO_TERMS})
             store.upsert_utterance(utt)
@@ -134,7 +149,7 @@ def run_speech_check(store: Store, media_id: str) -> dict[str, Any]:
             stats["unverified"] += 1
             unverified_counter.update(unknown)
         if elsewhere:
-            flags.append("terms_seen_elsewhere")
+            flags.append(FLAG_ELSEWHERE)
         utt.quality_flags = sorted(set(flags))
         # 判定の根拠を残す。原文は変更しない。
         utt.tokens = [t for t in utt.tokens if t.get("kind") != "term_check"] + [

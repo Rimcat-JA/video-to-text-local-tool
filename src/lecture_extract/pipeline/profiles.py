@@ -37,12 +37,33 @@ CODE_KINDS = {"code", "terminal_output"}
 
 # 用語らしさの判定に使う語形。画面に出ている語と発話を突き合わせるために使う。
 _TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{2,}")
+# 一般的な会話語。用語一覧に載せない。専門語との区別がつかなくなるため。
 _STOPWORDS = {
     "the", "and", "for", "with", "this", "that", "you", "your", "from", "are",
     "was", "were", "has", "have", "not", "but", "can", "will", "how", "what",
     "when", "where", "which", "into", "out", "get", "set", "use", "using",
     "all", "any", "more", "than", "then", "one", "two", "new", "our",
+    "about", "after", "again", "also", "another", "back", "because", "been",
+    "before", "being", "both", "come", "could", "did", "does", "doing", "done",
+    "down", "each", "else", "even", "every", "far", "few", "find", "first",
+    "give", "going", "good", "great", "had", "here", "his", "her", "hey",
+    "important", "its", "just", "keep", "kind", "know", "last", "least",
+    "left", "less", "let", "like", "little", "long", "look", "lot", "make",
+    "many", "may", "mean", "might", "most", "much", "must", "need", "never",
+    "next", "nice", "now", "off", "okay", "once", "only", "other", "over",
+    "own", "part", "put", "quite", "rather", "really", "right", "said", "same",
+    "say", "see", "seen", "should", "show", "side", "simple", "since", "some",
+    "sort", "start", "still", "stuff", "such", "sure", "take", "tell", "them",
+    "there", "these", "they", "thing", "things", "think", "those", "though",
+    "three", "through", "time", "times", "too", "took", "under", "until",
+    "very", "want", "watch", "way", "well", "went", "were", "whole", "why",
+    "without", "work", "would", "yes", "yet", "actually", "basically",
+    "something", "everything", "anything", "nothing", "someone", "everyone",
+    "here", "there", "again", "always", "already", "almost", "enough",
 }
+
+# 専門語らしい形。記号・数字・大文字小文字の混在を含む語は一般語ではない。
+_TECHNICAL_SHAPE = re.compile(r"[_.\-0-9]|[a-z][A-Z]")
 
 
 class ProfileExporter:
@@ -335,7 +356,11 @@ class ProfileExporter:
             "",
             "## 用語（画面に現れ、発話でも言及された語）",
             "",
-            "| 用語 | 画面での出現 | 発話での言及 | 初出 |",
+            "記号・数字を含む語か大文字で始まる語のうち、画面と発話の両方に現れたものです。",
+            "コードの識別子は画面での表記をそのまま載せています。",
+            "件数は照合の手がかりであり、重要度でも認識精度でもありません。",
+            "",
+            "| 用語 | 画面での出現(表示期間数) | 発話での言及(回数) | 初出 |",
             "|---|---|---|---|",
         ]
         for term, info in terms[:60]:
@@ -380,6 +405,10 @@ class ProfileExporter:
             for term in set(_TERM_RE.findall(content.body_text)):
                 low = term.lower()
                 if low in _STOPWORDS or len(term) < 4:
+                    continue
+                # 記号や数字を含まない普通の英単語は、画面と発話の両方に
+                # 高頻度で現れても専門語とは限らない。形で絞る。
+                if not _TECHNICAL_SHAPE.search(term) and not term[0].isupper():
                     continue
                 screen_counts[low] += 1
                 surface_counts.setdefault(low, Counter())[term] += 1

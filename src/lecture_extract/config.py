@@ -149,7 +149,9 @@ class BlockConfig:
 
     # 同じスライド・同じコード領域・同じ文脈が続く範囲をひとつの教材単位にまとめる。
     group_units: bool = True
-    unit_similarity: float = 0.45  # この類似度以上なら同じ教材の変更とみなす
+    # 中身のある行の重なり (Jaccard) がこの割合以上なら、同じ教材の変更とみなす。
+    # 低すぎると別のスライドを同じ教材の「変更後」として統合してしまう。
+    unit_similarity: float = 0.60
     unit_max_gap_us: int = 15_000_000  # これ以上間が空いたら別の教材
     unit_max_duration_us: int = 900_000_000  # ひとつの単位が長くなりすぎないようにする
 

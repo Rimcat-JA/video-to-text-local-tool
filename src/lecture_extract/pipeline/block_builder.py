@@ -17,7 +17,7 @@ from typing import Any
 from ..config import RunConfig
 from ..db.store import Store, new_id
 from ..models import ReadingBlock, ScreenContent, ScreenOccurrence
-from ..util.textnorm import line_similarity
+from ..util.textnorm import line_similarity, normalize_for_compare
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +30,20 @@ CHANGE_MODIFIED = "modified"  # 内容が変わった
 CHANGE_UNEXTRACTED = "unextracted"  # 本文未確定
 
 
+def _material_similarity(a: str, b: str) -> float:
+    """同じ教材の別の版とみなせるか。
+
+    行の並びの近さ (difflib) を使うと、空行や短い行が多いスライド同士で値が
+    跳ね上がり、無関係なスライドを同じ教材の変更として統合してしまう。
+    中身のある行の重なり (Jaccard) で判断する。
+    """
+    la = {ln.strip() for ln in (a or "").split("\n") if ln.strip()}
+    lb = {ln.strip() for ln in (b or "").split("\n") if ln.strip()}
+    if not la or not lb:
+        return 0.0
+    return len(la & lb) / len(la | lb)
+
+
 def _body_for(occ: ScreenOccurrence, contents: dict[str, ScreenContent]) -> str | None:
     if not occ.content_id:
         return None
@@ -37,16 +51,31 @@ def _body_for(occ: ScreenOccurrence, contents: dict[str, ScreenContent]) -> str 
     return content.body_text if content else None
 
 
+def _heading_of(content: ScreenContent) -> str:
+    """画面の見出し。文脈情報が無い場合、見出しが実質の題名になる。"""
+    ctx = content.context or {}
+    title = str(ctx.get("file_name") or ctx.get("title") or "").strip()
+    if title:
+        return normalize_for_compare(title)
+    for region in sorted(content.regions, key=lambda r: r.reading_order):
+        if region.kind == "heading" and region.text.strip():
+            return normalize_for_compare(region.text.strip().splitlines()[0])
+    return ""
+
+
 def _context_key(occ: ScreenOccurrence, contents: dict[str, ScreenContent]) -> tuple[str, str]:
-    """画面種別とファイル名・題名。これが変われば別の教材とみなす。"""
+    """画面種別と題名。これが変われば別の教材とみなす。
+
+    題名にはファイル名・題名だけでなく見出しも使う。文脈情報が空のスライドでは
+    見出しが唯一の識別子であり、これを見ないと別のスライドを同じ教材の
+    「変更後」として統合してしまう。
+    """
     if not occ.content_id:
         return ("", "")
     content = contents.get(occ.content_id)
     if content is None:
         return ("", "")
-    ctx = content.context or {}
-    label = str(ctx.get("file_name") or ctx.get("title") or "")
-    return (content.screen_kind, label)
+    return (content.screen_kind, _heading_of(content))
 
 
 def _title_for(occ: ScreenOccurrence, contents: dict[str, ScreenContent]) -> str:
@@ -111,7 +140,7 @@ def _can_continue(
 
     if unit.anchor_body is None or not unit.anchor_body.strip() or not body.strip():
         return False, ""
-    if line_similarity(unit.anchor_body, body) >= block.unit_similarity:
+    if _material_similarity(unit.anchor_body, body) >= block.unit_similarity:
         return True, CHANGE_MODIFIED
     return False, ""
 
