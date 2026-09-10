@@ -142,6 +142,7 @@ class VisionExtractor:
             "region_checks": 0,
             "region_merged": 0,
             "region_changed": 0,
+            "server_restarts": 0,
         }
 
     # ------------------------------------------------------------------ keys
@@ -194,6 +195,9 @@ class VisionExtractor:
             if result.status == STATUS_ERROR:
                 # 通信・プロセス障害の再試行 (設計 12.2)。
                 log.warning("推論に失敗しました (%d/%d): %s", attempts, self.vcfg.retry_limit + 1, result.error)
+                # 管理下のサーバーが落ちている場合は起動し直す。長時間実行では
+                # サーバー側が落ちることがあり、再試行だけでは復帰できない。
+                self._recover_server()
                 time.sleep(min(5.0, 1.0 * attempts))
                 continue
             if result.status == STATUS_SCHEMA_INVALID and attempts <= self.vcfg.retry_limit:
@@ -206,6 +210,22 @@ class VisionExtractor:
         if result.status == STATUS_OK:
             self.store.cache_put(key, kind, {"payload": result.payload, "status": result.status, "attempt_id": attempt_id}, attempt_id)
         return result.payload, result.status, attempt_id
+
+    def _recover_server(self) -> None:
+        """推論サーバーが応答しなくなった場合に、起動し直す。"""
+        ensure_ready = getattr(self.adapter, "ensure_ready", None)
+        health = getattr(self.adapter, "health", None)
+        if ensure_ready is None:
+            return
+        try:
+            if health is not None and health():
+                return  # 生きている。障害は別の原因
+            log.warning("推論サーバーが応答しません。起動し直します。")
+            ensure_ready()
+            self.stats["server_restarts"] = self.stats.get("server_restarts", 0) + 1
+            log.info("推論サーバーを再起動しました。")
+        except Exception as exc:  # noqa: BLE001 - 再起動に失敗しても次の再試行へ進む
+            log.warning("推論サーバーの再起動に失敗しました: %s", exc)
 
     def _record_attempt(
         self,

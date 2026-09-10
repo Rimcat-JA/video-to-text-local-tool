@@ -64,6 +64,10 @@ def run_screen_tracker(store: Store, cfg: RunConfig, media_id: str) -> dict[str,
             current.evidence_refs = current.evidence_refs + nxt.evidence_refs
             current.quality_flags = sorted(set(current.quality_flags) | set(nxt.quality_flags) - {FLAG_NOT_EXTRACTED})
             current.change_summary = f"{current.change_summary}; merged({nxt.change_summary})"
+            # 統合で消える表示期間を参照している対応づけを先に消す。
+            # 初回は align より前に走るので問題にならないが、再実行時は
+            # 既存の alignment が外部キーで参照している。
+            store.conn.execute("DELETE FROM alignment WHERE occurrence_id = ?", (nxt.id,))
             store.conn.execute("DELETE FROM screen_occurrence WHERE id = ?", (nxt.id,))
             stats["merged"] += 1
             continue
