@@ -44,7 +44,13 @@ def completion_status(store: Store, media_id: str, all_stages_done: bool) -> str
 def collect_quality(store: Store, media_id: str, duration_us: int) -> dict[str, Any]:
     occurrences = store.occurrences(media_id)
     utterances = store.utterances(media_id)
-    contents = {c.id: c for c in store.all_contents()}
+    # 品質の件数は「最終採用データ」だけを対象にする。過去の試行で作られ、
+    # 今はどの表示期間からも参照されていない本文を混ぜると、配布した JSONL から
+    # 再集計した値と合わなくなる (P2-1)。
+    referenced = {o.content_id for o in occurrences if o.content_id}
+    all_contents = store.all_contents()
+    contents = {c.id: c for c in all_contents if c.id in referenced}
+    superseded = len(all_contents) - len(contents)
     coverage = store.coverage(media_id)
     reviews = store.reviews(media_id)
     alignments = store.alignments(media_id)
@@ -98,6 +104,7 @@ def collect_quality(store: Store, media_id: str, duration_us: int) -> dict[str, 
         "reviews_total": len(reviews),
         "attempt_stats": store.attempt_stats(),
         "metrics": store.metrics(media_id),
+        "superseded_contents": superseded,
     }
 
 
@@ -155,9 +162,24 @@ def write_quality_report(
 
     lines.append("## 不明文字・切り詰め")
     lines.append("")
+    lines.append(
+        f"以下は**最終採用データ**（配布した `screen_contents.jsonl` に含まれる"
+        f" {q['unique_contents']} 件の画面本文）に対する集計です。"
+    )
+    lines.append("")
     lines.append(f"- 判読不能を含む領域: {q['unreadable_regions']} 件")
     lines.append(f"- 出力が長さ制限で切れた画面本文: {q['truncated_contents']} 件")
-    lines.append(f"- モデル応答の状態内訳: {q['attempt_stats'] or 'なし'}")
+    lines.append("")
+    lines.append("### 参考: 過去の試行を含む履歴")
+    lines.append("")
+    lines.append(
+        f"- モデル応答の状態内訳（**全実行の累計**。1 応答＝1 件で、画面本文の件数とは"
+        f" 単位が異なります）: {q['attempt_stats'] or 'なし'}"
+    )
+    lines.append(
+        f"- 過去の試行で作られ、現在は採用されていない画面本文: {q['superseded_contents']} 件"
+        "（正本には抽出履歴として残しています）"
+    )
     lines.append("")
 
     lines.append("## 時刻異常")
@@ -190,6 +212,11 @@ def write_quality_report(
 
     lines.append("## 性能計測")
     lines.append("")
+    lines.append(
+        "**全実行の累計**です。同じ指標が複数行あるのは、ステージを複数回実行したためで、"
+        "行は古い順に並んでいます。"
+    )
+    lines.append("")
     lines.append("| ステージ | 指標 | 値 |")
     lines.append("|---|---|---|")
     for metric in q["metrics"]:
@@ -209,6 +236,45 @@ def write_quality_report(
 
     atomic_write_text(path, "\n".join(lines) + "\n")
     return path
+
+
+def _extraction_provenance(store: Store) -> dict[str, Any]:
+    """採用データを生成したモデルを、抽出履歴から復元する (設計 13.2)。
+
+    書き出しだけを再実行しても、原文がどのモデル・どの設定で作られたか
+    追跡できるようにする。
+    """
+    rows = store.conn.execute(
+        """SELECT model_revision, runtime_version, prompt_version, params_hash,
+                  COUNT(*) AS n, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+           FROM extraction_attempt
+           GROUP BY model_revision, runtime_version, prompt_version, params_hash
+           ORDER BY n DESC"""
+    ).fetchall()
+    vision = [
+        {
+            "model_revision": r["model_revision"],
+            "runtime_version": r["runtime_version"],
+            "prompt_version": r["prompt_version"],
+            "params_hash": r["params_hash"],
+            "requests": r["n"],
+            "first_at": r["first_at"],
+            "last_at": r["last_at"],
+        }
+        for r in rows
+    ]
+    asr_rows = store.conn.execute(
+        "SELECT DISTINCT source FROM utterance"
+    ).fetchall()
+    return {
+        "vision": vision,
+        "asr_sources": [r["source"] for r in asr_rows],
+        "note": (
+            "vision は抽出履歴 (extraction_attempt) から復元した一覧です。"
+            "複数行ある場合、設定やモデルを変えて実行した履歴が含まれます。"
+            "最終採用データがどの行に由来するかは、画面本文の source_attempt_ids から辿れます。"
+        ),
+    }
 
 
 def _unknown_coverage(store: Store, media_id: str, duration_us: int) -> list[tuple[int, int]]:
@@ -259,8 +325,10 @@ def write_manifest(
             "timeline_flags": media["timeline_flags"],
         },
         "models": {
-            "vision": vision_info,
-            "asr": asr_info,
+            # 今回の実行で使ったモデル。書き出しだけを実行した場合は not_run になる。
+            "this_run": {"vision": vision_info, "asr": asr_info},
+            # 採用データを実際に生成したモデル。書き出しだけを再実行しても追跡できる (P2-4)。
+            "produced_extraction": _extraction_provenance(store),
         },
         "runtime": {
             "python": sys.version,

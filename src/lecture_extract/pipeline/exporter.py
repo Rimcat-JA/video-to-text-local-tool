@@ -565,6 +565,12 @@ class Exporter:
                                 "is_primary": a.is_primary,
                             }
                         )
+                # 受け取ったファイルだけで参照を解決できるよう、画面本文 ID も持たせる。
+                content_ids = []
+                for occ_id in block.occurrence_ids:
+                    occ = self.occ_by_id.get(occ_id)
+                    if occ is not None and occ.content_id and occ.content_id not in content_ids:
+                        content_ids.append(occ.content_id)
                 fh.write(
                     json.dumps(
                         {
@@ -572,6 +578,7 @@ class Exporter:
                             "index": block.index,
                             "kind": block.kind,
                             "title_hint": block.title_hint,
+                            "content_ids": content_ids,
                             "start_us": block.start_us,
                             "end_us": block.end_us,
                             "start": format_timestamp(block.start_us),

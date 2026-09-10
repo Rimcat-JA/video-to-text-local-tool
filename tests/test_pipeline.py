@@ -118,7 +118,9 @@ def test_full_pipeline_outputs(lecture_fixture, tmp_path):
 
         manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["input"]["sha256"]
-        assert manifest["models"]["vision"]["adapter"] == "stub"
+        assert manifest["models"]["this_run"]["vision"]["adapter"] == "stub"
+        # 採用データを生成したモデルを、書き出しだけの再実行でも追跡できる (P2-4)。
+        assert "produced_extraction" in manifest["models"]
         assert manifest["status"] in ("completed_with_review", "reviewed")
     finally:
         orch.close()

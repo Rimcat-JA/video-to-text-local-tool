@@ -114,7 +114,8 @@ class ProfileExporter:
             "",
             "画面に表示された原文と発話を、教材単位ごとにまとめたものです。",
             "要約・翻訳・書き換えは行っていません。発話は連結しただけです。",
-            "本文が未抽出の区間は省いています（全期間は `lecture.md` と JSONL にあります）。",
+            "画面本文が未抽出の区間も、音声の説明は収録しています。",
+            "画面本文に未解決の品質問題がある場合は、その単元の冒頭に注記を付けています。",
             "",
             f"- 元動画: `{self.media['source_path']}`",
             f"- 再生時間: {format_timestamp(self.media['duration_us'])}",
@@ -123,14 +124,58 @@ class ProfileExporter:
             "",
         ]
         written = 0
-        for block in self.blocks:
+        audio_only = 0
+        covered: set[str] = set()
+        index = 0
+        while index < len(self.blocks):
+            block = self.blocks[index]
             occs = self._members(block)
             versions = self._screen_versions(occs)
-            utts = self._utterances(occs)
-            if not versions and not utts:
-                continue
+
+            # 画面本文が無い区間が続く場合、まとめて「音声説明のみ」の単元にする。
+            # 画面を抽出できなかったことを、説明の欠落にしない (P0-1)。
             if not versions:
-                continue  # 画面本文が無い区間は教材としては省く
+                run = [block]
+                j = index + 1
+                while j < len(self.blocks):
+                    nxt = self._members(self.blocks[j])
+                    if self._screen_versions(nxt):
+                        break
+                    run.append(self.blocks[j])
+                    j += 1
+                run_occs = [o for b in run for o in self._members(b)]
+                run_utts = self._utterances(run_occs)
+                index = j
+                if not run_utts:
+                    continue
+                audio_only += 1
+                lines.append(
+                    f"## {format_timestamp(run[0].start_us)} – {format_timestamp(run[-1].end_us)}"
+                    " （画面本文なし・音声説明あり）"
+                )
+                lines.append("")
+                lines.append(
+                    "> この区間の画面本文は抽出していません。表示期間と境界は"
+                    " `screen_occurrences.jsonl` に残っています。"
+                )
+                lines.append("")
+                lines.append("**説明**")
+                lines.append("")
+                lines.append(
+                    escape_markdown_text(" ".join(u.text_raw.strip() for u in run_utts))
+                )
+                lines.append("")
+                covered.update(u.id for u in run_utts)
+                lines.append(
+                    f"<!-- blocks={','.join(b.id for b in run)} screens=none "
+                    f"utterances={','.join(u.id for u in run_utts)} "
+                    f"t={run[0].start_us}-{run[-1].end_us} -->"
+                )
+                lines.append("")
+                continue
+
+            index += 1
+            utts = self._utterances(occs)
             written += 1
             title = block.title_hint.strip()
             heading = f"## {format_timestamp(block.start_us)} – {format_timestamp(block.end_us)}"
@@ -138,6 +183,14 @@ class ProfileExporter:
                 heading += f" {escape_markdown_text(title)}"
             lines.append(heading)
             lines.append("")
+
+            # 未解決の品質問題を、この単元の冒頭に示す (P0-2)。
+            notes = self._quality_notes(versions)
+            if notes:
+                lines.append("> **この単元の画面本文には未解決の問題があります**")
+                for note in notes:
+                    lines.append(f"> - {note}")
+                lines.append("")
 
             first_occ, first_content = versions[0]
             lines.extend(self._content_lines(first_content))
@@ -153,6 +206,7 @@ class ProfileExporter:
                 lines.append("")
                 lines.append(escape_markdown_text(" ".join(u.text_raw.strip() for u in utts)))
                 lines.append("")
+                covered.update(u.id for u in utts)
 
             refs = ", ".join(v[1].id for v in versions[:4])
             lines.append(
@@ -160,9 +214,60 @@ class ProfileExporter:
                 f"t={block.start_us}-{block.end_us} -->"
             )
             lines.append("")
+
+        # 収録できなかった発話が残っていないか確かめ、残っていれば末尾に収める。
+        missing = [u for u in sorted(self.utt_by_id.values(), key=lambda u: u.start_us)
+                   if u.id not in covered]
+        if missing:
+            lines.append("## どの単元にも入らなかった発話")
+            lines.append("")
+            lines.append(
+                "画面の表示期間と重ならない発話です。欠落させないためここに収めます。"
+            )
+            lines.append("")
+            for u in missing:
+                lines.append(
+                    f"- `{format_timestamp(u.start_us)} – {format_timestamp(u.end_us)}` "
+                    f"{escape_markdown_text(u.text_raw)} <!-- {u.id} -->"
+                )
+            lines.append("")
+        log.info(
+            "material.md: 画面つき %d 単元 / 音声のみ %d 単元 / 収録発話 %d 件 (全 %d 件)",
+            written, audio_only, len(covered) + len(missing), len(self.utt_by_id),
+        )
         atomic_write_text(path, "\n".join(lines) + "\n")
-        log.info("material.md: %d 単位", written)
         return path
+
+    _FLAG_NOTES = {
+        "truncated": "モデルの出力が長さ制限で切れています。本文が途中までの可能性があります。",
+        "tile_join_unverified": "分割して読んだ範囲の継ぎ目が照合できていません。重複や欠落の可能性があります。",
+        "fallback_split_read": "全画面の読み取りが成立せず、分割して読み直した結果です。",
+        "unreadable": "判読できない文字が含まれます。推測では埋めていません。",
+        "possible_duplicate_regions": "よく似た領域が複数あります。同じ範囲を二重に読んだ可能性があります。",
+        "duplicate_regions_removed": "完全に同じ内容の領域を取り除いています。",
+        "low_resolution": "解像度が不足しており、文字の形が不確かです。",
+        "not_extracted": "一部の領域を抽出できていません。",
+    }
+    # 取り除き済みで、読み手の判断に影響しないもの
+    _FLAG_RESOLVED = {"duplicate_regions_removed"}
+
+    def _quality_notes(self, versions: list[tuple[ScreenOccurrence, ScreenContent]]) -> list[str]:
+        """この単元が参照する画面本文の、未解決の品質問題を並べる (P0-2)。"""
+        seen: dict[str, set[str]] = {}
+        for occ, content in versions:
+            flags = set(content.quality_flags)
+            for region in content.regions:
+                flags |= {f for f in region.flags if f in self._FLAG_NOTES}
+            for flag in flags:
+                if flag in self._FLAG_RESOLVED or flag not in self._FLAG_NOTES:
+                    continue
+                seen.setdefault(flag, set()).add(content.id)
+        out = []
+        for flag, ids in sorted(seen.items()):
+            out.append(
+                f"{self._FLAG_NOTES[flag]}（`{flag}` / 該当本文: {', '.join(sorted(ids)[:3])}）"
+            )
+        return out
 
     def _content_lines(self, content: ScreenContent) -> list[str]:
         lines: list[str] = []
