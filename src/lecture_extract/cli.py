@@ -294,6 +294,61 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 1
 
 
+# -------------------------------------------------------------------- gaps
+def cmd_gaps(args: argparse.Namespace) -> int:
+    """未抽出区間を理由別に分け、再処理の優先順位を付けて表示する。"""
+    import json as _json
+
+    from .pipeline.gaps import find_gaps, summarize
+
+    setup_logging(args.log_level)
+    store = Store(Path(args.work) / "state.sqlite")
+    try:
+        media = store.get_media()
+        if media is None:
+            print("取り込み済みの動画がありません。")
+            return 1
+        gaps = find_gaps(store, media["id"], min_duration_us=parse_time(args.min_duration) or 0)
+        summary = summarize(gaps)
+
+        print("=== 未抽出区間の内訳 ===")
+        print(f"  区間数: {summary['gaps']}")
+        for reason, n in sorted(summary["by_reason"].items()):
+            t = summary["time_by_reason_us"].get(reason, 0)
+            label = {
+                "skipped_short": "短時間表示・遷移として意図的に対象外",
+                "blank": "空画面",
+                "failed": "抽出を試みて失敗",
+                "not_attempted": "まだ処理していない",
+            }.get(reason, reason)
+            print(f"  {label:<34} {n:5d} 区間 / 合計 {format_timestamp(t)}")
+        print(f"  発話が重なる区間: {summary['with_speech']}")
+        print(f"  前後で画面本文が違う区間: {summary['neighbours_differ']}")
+        print()
+        print(f"=== 再処理の優先順位 上位 {args.top} 件 ===")
+        print("  優先度は「固有の内容がありそうか」の見積もりです。")
+        print("  表示の長さ・説明の量・前後の画面の違い・失敗の有無から算出します。")
+        print()
+        for g in gaps[: args.top]:
+            print(
+                f"  {g.score:5.2f}  {format_timestamp(g.start_us)} – {format_timestamp(g.end_us)}"
+                f"  ({g.duration_us/1e6:6.1f}s) {g.reason:<14}"
+                f" 発話{g.utterance_count:3d}件 {g.speech_chars:5d}字"
+                f"{' 前後で画面が変化' if g.neighbours_differ else ''}"
+            )
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
+                for g in gaps:
+                    fh.write(_json.dumps(g.to_dict(), ensure_ascii=False) + "\n")
+            print()
+            print(f"一覧を書き出しました: {args.out}")
+            print("再処理する区間は --start / --end で指定できます。")
+        return 0
+    finally:
+        store.close()
+
+
 # ------------------------------------------------------------------- cache
 def cmd_cache(args: argparse.Namespace) -> int:
     """画像キャッシュの容量確認・整理・根拠画像の再生成 (設計 12.3)。"""
@@ -461,6 +516,14 @@ def main(argv: list[str] | None = None) -> int:
     r_resolve.add_argument("--status", default="resolved", choices=["resolved", "wontfix", "open"])
     r_resolve.add_argument("--note", default="")
     p_review.set_defaults(func=cmd_review)
+
+    p_gaps = sub.add_parser("gaps", help="未抽出区間を理由別に分け、再処理の優先順位を付ける")
+    _add_common(p_gaps)
+    p_gaps.add_argument("-w", "--work", default="work")
+    p_gaps.add_argument("--top", type=int, default=20, help="表示する件数")
+    p_gaps.add_argument("--min-duration", default="2.0", help="この長さ未満の意図的な対象外は省く(秒)")
+    p_gaps.add_argument("--out", default=None, help="一覧を JSONL で書き出す")
+    p_gaps.set_defaults(func=cmd_gaps)
 
     p_cache = sub.add_parser("cache", help="画像キャッシュの容量確認・整理・根拠画像の再生成")
     _add_common(p_cache)
