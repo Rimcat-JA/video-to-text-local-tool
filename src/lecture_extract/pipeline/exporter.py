@@ -119,10 +119,34 @@ class Exporter:
 
         referenced_utterances: set[str] = set()
 
-        for block in self.blocks:
+        index = 0
+        unextracted_runs = 0
+        while index < len(self.blocks):
+            block = self.blocks[index]
             occs = [self.occ_by_id[o] for o in block.occurrence_ids if o in self.occ_by_id]
             if not occs:
+                index += 1
                 continue
+
+            # 本文が未抽出の状態が続く区間は、1 状態ずつ節を立てると文書が読めなくなる。
+            # 期間・件数・重なる発話をまとめて 1 節にする。個々の期間と根拠時刻は
+            # screen_occurrences.jsonl に残っているので、情報は失われない。
+            if all(o.content_id is None for o in occs):
+                run_blocks = [block]
+                j = index + 1
+                while j < len(self.blocks):
+                    nxt = [self.occ_by_id[o] for o in self.blocks[j].occurrence_ids if o in self.occ_by_id]
+                    if not nxt or any(o.content_id is not None for o in nxt):
+                        break
+                    run_blocks.append(self.blocks[j])
+                    j += 1
+                unextracted_runs += 1
+                lines.extend(
+                    self._unextracted_run_lines(run_blocks, unextracted_runs, referenced_utterances)
+                )
+                index = j
+                continue
+            index += 1
             # 原文に見出しが無い場合は、内容の要約を無断でタイトルにしない (設計 10.1)。
             title = block.title_hint.strip()
             heading = f"## ブロック {block.index + 1}"
@@ -198,6 +222,55 @@ class Exporter:
 
         atomic_write_text(path, "\n".join(lines) + "\n")
         return path
+
+    def _unextracted_run_lines(
+        self, run_blocks: list, run_index: int, referenced: set[str]
+    ) -> list[str]:
+        """本文未抽出の状態が続く区間を、1 節にまとめて出す。"""
+        from collections import Counter
+
+        occs = [
+            self.occ_by_id[o]
+            for b in run_blocks
+            for o in b.occurrence_ids
+            if o in self.occ_by_id
+        ]
+        start_us = min(o.start_us for o in occs)
+        end_us = max(o.end_us for o in occs)
+        kinds = Counter(o.state_kind for o in occs)
+        kind_text = " / ".join(f"{k} {n}" for k, n in kinds.most_common())
+
+        lines = [
+            f"## 未抽出区間 {run_index} — {format_timestamp(start_us)} – {format_timestamp(end_us)}",
+            "",
+            f"- 表示状態 {len(occs)} 件（{kind_text}）。画面本文は未抽出です。",
+            "- 期間・境界・根拠時刻は `screen_occurrences.jsonl` に 1 件ずつ残しています。",
+            "",
+        ]
+
+        seen: set[str] = set()
+        utts: list[Utterance] = []
+        for occ in occs:
+            for a in self.alignments_by_occ.get(occ.id, []):
+                utt = self.utt_by_id.get(a.utterance_id)
+                if utt is None or utt.id in seen:
+                    continue
+                seen.add(utt.id)
+                utts.append(utt)
+        if utts:
+            lines.append("**この区間に重なる発話**")
+            lines.append("")
+            for utt in sorted(utts, key=lambda u: u.start_us):
+                referenced.add(utt.id)
+                lines.append(
+                    f"- `{format_timestamp(utt.start_us)} – {format_timestamp(utt.end_us)}` "
+                    f"{escape_markdown_text(utt.text_raw)}"
+                )
+            lines.append("")
+        else:
+            lines.append("**発話**: この区間に重なる発話はありません。")
+            lines.append("")
+        return lines
 
     def _context_lines(
         self, occ: ScreenOccurrence, content: ScreenContent | None, occs: list[ScreenOccurrence]

@@ -797,11 +797,14 @@ def run_frame_scan(
     store.update_checkpoint(job_id, {"last_committed_us": end_us, "committed_states": n_states})
 
     # 画面側の時間軸網羅を更新する。表示期間として切り出せた範囲は「未抽出だが期間は確定」。
+    # 再開した場合、この実行で保存した分だけでは以前の範囲が欠落として記録されてしまうため、
+    # 正本 (DB) にある全期間を使って作り直す。
+    all_spans = [(o.start_us, o.end_us) for o in store.occurrences(media_id)]
     spans: list[CoverageSpan] = []
     if start_us > 0:
         spans.append(CoverageSpan(new_id("cov"), media_id, "screen", 0, start_us, "out_of_range", "解析範囲外"))
     cursor = start_us
-    for s_start, s_end in sorted(saved_occurrences):
+    for s_start, s_end in sorted(all_spans):
         if s_start > cursor:
             spans.append(
                 CoverageSpan(new_id("cov"), media_id, "screen", cursor, s_start, "unextracted", "表示状態を切り出せていない区間")

@@ -801,6 +801,13 @@ def _update_screen_coverage(store: Store, media_id: str, duration_us: int) -> No
     existing = store.coverage(media_id, "screen")
     out_of_range = [s for s in existing if s.state == "out_of_range"]
     occurrences = store.occurrences(media_id)
+    # 抽出を試みて失敗した状態と、まだ処理していない状態を区別する。
+    # 中断した場合、未処理の期間を「失敗」と報告してしまうため。
+    failed_ids = {
+        r.target_ref
+        for r in store.reviews(media_id)
+        if r.reason in ("vision:extraction_failed", "vision:truncated_output")
+    }
     spans: list[CoverageSpan] = list(out_of_range)
     for occ in occurrences:
         if occ.content_id:
@@ -809,8 +816,10 @@ def _update_screen_coverage(store: Store, media_id: str, duration_us: int) -> No
             state, detail = "blank", "空画面"
         elif FLAG_NOT_EXTRACTED in occ.quality_flags and "short_or_transition" in occ.quality_flags:
             state, detail = "unextracted", "短時間表示・全文未確定"
-        else:
+        elif occ.id in failed_ids:
             state, detail = "failed", "抽出失敗"
+        else:
+            state, detail = "unextracted", "未処理（抽出をまだ行っていない）"
         spans.append(
             CoverageSpan(new_id("cov"), media_id, "screen", occ.start_us, occ.end_us, state, detail)
         )
