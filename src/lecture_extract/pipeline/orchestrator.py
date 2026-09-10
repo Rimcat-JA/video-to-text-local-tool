@@ -23,8 +23,10 @@ from .exporter import Exporter
 from .frame_scan import run_frame_scan
 from .ingest import analysis_range, ingest, input_hash
 from .probe import MediaProbe, probe_media
+from .profiles import write_profiles
 from .quality import completion_status, write_manifest, write_quality_report
 from .screen_tracker import run_screen_tracker
+from .speech_check import run_speech_check
 from .vision_extract import run_vision
 
 log = logging.getLogger(__name__)
@@ -184,6 +186,10 @@ class Orchestrator:
         # --- align ---
         self._run_stage("align", media_id, in_hash, lambda job_id: run_aligner(store, media_id))
 
+        # 発話の専門語を画面文字と突き合わせ、確認済みかどうかを残す (設計 7.2)。
+        if self._wants("align"):
+            self.results['speech_check'] = run_speech_check(store, media_id)
+
         # --- blocks ---
         self._run_stage("blocks", media_id, in_hash, lambda job_id: run_block_builder(store, cfg, media_id))
 
@@ -331,6 +337,8 @@ class Orchestrator:
         assert media is not None
         exporter = Exporter(self.store, self.cfg, media)
         written = exporter.export_all()
+        # 用途別の派生物 (設計 1.2: 原本は上書きしない)
+        written.update(write_profiles(self.store, self.cfg, media))
         return {"files": written}
 
     # ------------------------------------------------------------- reporting

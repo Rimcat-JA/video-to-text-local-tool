@@ -492,6 +492,18 @@ class Store:
             for r in self.conn.execute(sql, args)
         ]
 
+    def clear_reviews_for_target(self, media_id: str, target_prefix: str) -> None:
+        """特定の対象についてだけ、未解決の確認項目を消す。
+
+        再解析する対象の分だけ作り直すために使う。ステージ全体を消すと、
+        今回처理しない過去の対象の確認項目まで失われる。
+        """
+        self.conn.execute(
+            "DELETE FROM review_item WHERE media_id = ? AND review_status = 'open'"
+            " AND target_ref LIKE ?",
+            (media_id, target_prefix + "%"),
+        )
+
     def clear_reviews_by_reason_prefix(self, media_id: str, prefix: str) -> None:
         """再解析時に、そのステージが作った未解決項目だけを作り直す。
 

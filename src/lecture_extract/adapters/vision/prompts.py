@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 # 設計 6.5 の抽出規約。文言を変える場合は PROMPT_VERSION を上げる。
 EXTRACTION_CONTRACT = """目的は、与えられた画像に実際に表示されている文字の転記である。
@@ -94,6 +94,14 @@ FULL_SCHEMA: dict[str, Any] = {
                     "note": {"type": "string"},
                     "relation": {"type": "string"},
                     "relation_unknown": {"type": "boolean"},
+                    # 図の関係 (設計 6.4)。矢印や線で結ばれた要素と向きを残す。
+                    "from": {"type": "string"},
+                    "to": {"type": "string"},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["one_way", "two_way", "none", "unknown"],
+                    },
+                    "group": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["note"],
             },
@@ -156,6 +164,17 @@ FULL_INSTRUCTION = f"""{EXTRACTION_CONTRACT}
 - すべて出力し切ったときだけ output_complete を true にする。
   途中で打ち切った場合は false にする。
 
+- 図で要素が矢印や線で結ばれている場合、structure_notes に from / to / direction を入れる。
+  direction は one_way（片方向）・two_way（双方向）・none（線のみで向きなし）・unknown。
+  枠やまとまりで囲まれた要素群は group に列挙する。関係を確定できない場合は
+  relation_unknown を true にし、推測で結び付けない。
+
+出力形式:
+- JSON は詰めて出力する。改行・字下げ・余分な空白を入れない。
+  書式にトークンを使うと本文が出力上限に届かなくなる。
+- 同じ種類の文字が連続する範囲は、行ごとに分けずひとつの領域にまとめる。
+  領域を細かく分けるほど座標と属性の繰り返しが増え、本文が入らなくなる。
+
 {_FLAG_GUIDE}"""
 
 CROP_INSTRUCTION = f"""{EXTRACTION_CONTRACT}
@@ -172,6 +191,7 @@ CROP_INSTRUCTION = f"""{EXTRACTION_CONTRACT}
   推測した読みは candidates にだけ入れる。
 - 括弧の不足や構文の誤りがあっても修正しない。表示された通りに転記する。
 - すべて出力し切ったときだけ output_complete を true にする。
+- JSON は詰めて出力する。改行・字下げ・余分な空白を入れない。
 
 {_FLAG_GUIDE}"""
 

@@ -103,10 +103,23 @@ def merge_tile_lines(acc: list[str], new: list[str], max_overlap: int) -> tuple[
     """
     if not acc:
         return list(new), True
+    if not new:
+        return list(acc), True
     limit = min(len(acc), len(new), max(1, max_overlap))
     for k in range(limit, 0, -1):
         if [line.rstrip() for line in acc[-k:]] == [line.rstrip() for line in new[:k]]:
             return acc + new[k:], True
+
+    # 表示そのままで一致しない場合、空白を無視して照合する。
+    # 原文側の字下げは保持したまま、結合位置の判定にだけ使う。
+    def loose(lines: list[str]) -> list[str]:
+        return ["".join(line.split()) for line in lines]
+
+    for k in range(limit, 0, -1):
+        left, right = loose(acc[-k:]), loose(new[:k])
+        if left == right and any(left):
+            return acc + new[k:], True
+    # 一致しない場合は重複を勝手に削らず、両方を残して未検証と記録する。
     return acc + new, False
 
 
@@ -571,41 +584,95 @@ class VisionExtractor:
             y += step
         return tiles
 
-    def _band_fallback(
-        self, image: np.ndarray, frame_id: str, image_hash: str
-    ) -> tuple[list[Region], list[str], list[str]]:
-        """全画面パスが成立しない場合の領域分割 (設計 6.2)。"""
+    def _split_read(
+        self,
+        image: np.ndarray,
+        frame_id: str,
+        image_hash: str,
+        y_offset: int,
+        depth: int,
+    ) -> tuple[list[str], list[str], list[str]]:
+        """縦に 2 分割して読み、重複部分で結合を検証する (設計 6.1 / 6.2)。
+
+        切り詰めが起きた側だけをさらに分割するので、必要な深さだけ細かくなる。
+        戻り値は (行, フラグ, 試行 ID)。
+        """
         height, width = image.shape[:2]
-        bands = 3
-        overlap = int(height * self.vcfg.tile_overlap_ratio / bands)
-        regions: list[Region] = []
+        flags: list[str] = []
         attempt_ids: list[str] = []
-        flags = ["fallback_band_split"]
-        lines: list[str] = []
-        joined_ok = True
-        for i in range(bands):
-            y0 = max(0, i * height // bands - overlap)
-            y1 = min(height, (i + 1) * height // bands + overlap)
-            band = image[y0:y1, 0:width]
+
+        if depth >= self.vcfg.split_max_depth or height <= self.vcfg.split_min_height_px:
             payload, status, attempt_id = self._call(
-                band,
+                image,
                 "tile",
                 frame_id,
                 image_hash,
-                (0, y0, width, y1),
-                {"band_index": i, "band_count": bands},
+                (0, y_offset, width, y_offset + height),
+                {"split_depth": depth, "leaf": True},
             )
             if attempt_id:
                 attempt_ids.append(attempt_id)
+            if status == STATUS_TRUNCATED:
+                flags.append(FLAG_TRUNCATED)
+                self.stats["truncated"] += 1
             if payload is None:
-                flags.append(FLAG_NOT_EXTRACTED)
+                return [], flags + [FLAG_NOT_EXTRACTED], attempt_ids
+            return list(payload.get("lines") or []), flags, attempt_ids
+
+        # 重なりを持たせて上下に分ける。重なりは結合の照合に使う。
+        overlap = max(24, int(height * self.vcfg.tile_overlap_ratio))
+        mid = height // 2
+        parts = [(0, min(height, mid + overlap)), (max(0, mid - overlap), height)]
+
+        merged: list[str] = []
+        joined_ok = True
+        for index, (y0, y1) in enumerate(parts):
+            piece = image[y0:y1, 0:width]
+            payload, status, attempt_id = self._call(
+                piece,
+                "tile",
+                frame_id,
+                image_hash,
+                (0, y_offset + y0, width, y_offset + y1),
+                {"split_depth": depth, "part": index},
+            )
+            if attempt_id:
+                attempt_ids.append(attempt_id)
+            if status == STATUS_TRUNCATED or payload is None:
+                # この部分だけをさらに小さく分けて読み直す。
+                sub_lines, sub_flags, sub_ids = self._split_read(
+                    piece, frame_id, image_hash, y_offset + y0, depth + 1
+                )
+                flags.extend(sub_flags)
+                attempt_ids.extend(sub_ids)
+                part_lines = sub_lines
+            else:
+                part_lines = list(payload.get("lines") or [])
+            if index == 0:
+                merged = part_lines
                 continue
-            band_lines = list(payload.get("lines") or [])
-            lines, ok = merge_tile_lines(lines, band_lines, 6)
-            joined_ok = joined_ok and ok
+            merged, ok = merge_tile_lines(merged, part_lines, self.vcfg.split_join_lines)
+            if not ok:
+                joined_ok = False
+                self.stats["join_unverified"] = self.stats.get("join_unverified", 0) + 1
+                flags.append("join_unverified_at_y=" + str(y_offset + y0))
+        if not joined_ok:
+            flags.append("tile_join_unverified")
+        self.stats["splits"] = self.stats.get("splits", 0) + 1
+        return merged, flags, attempt_ids
+
+    def _band_fallback(
+        self, image: np.ndarray, frame_id: str, image_hash: str
+    ) -> tuple[list[Region], list[str], list[str]]:
+        """全画面パスが成立しない場合の分割読み取り (設計 6.2)。"""
+        height, width = image.shape[:2]
+        lines, flags, attempt_ids = self._split_read(image, frame_id, image_hash, 0, 0)
+        flags = ["fallback_split_read"] + flags
+        regions: list[Region] = []
         if lines:
-            if not joined_ok:
-                flags.append("tile_join_unverified")
+            join_flags = [
+                f for f in flags if f.startswith("join_unverified") or f == "tile_join_unverified"
+            ]
             regions.append(
                 Region(
                     region_id=new_id("reg"),
@@ -614,8 +681,12 @@ class VisionExtractor:
                     text="\n".join(lines),
                     bbox=[0, 0, width, height],
                     reading_order=0,
-                    flags=[FLAG_MERGED_TILES, "fallback_band_split"],
-                    evidence={"frame_id": frame_id, "attempt_ids": attempt_ids, "source": "band_fallback"},
+                    flags=sorted({FLAG_MERGED_TILES, "fallback_split_read", *join_flags}),
+                    evidence={
+                        "frame_id": frame_id,
+                        "attempt_ids": attempt_ids,
+                        "source": "split_read",
+                    },
                 )
             )
         return regions, flags, attempt_ids
@@ -664,7 +735,10 @@ def run_vision(
     occurrences = store.occurrences(media_id)
     job = store.get_job(media_id, "vision")
     done_ids = set(job["checkpoint"].get("done_occurrence_ids", [])) if (job and resume) else set()
-    store.clear_reviews_by_reason_prefix(media_id, "vision:")
+    if not resume:
+        # 最初からやり直す場合だけ、ステージ全体の確認項目を作り直す。
+        # 再開時に一括削除すると、今回処理しない過去の対象の分まで消えてしまう。
+        store.clear_reviews_by_reason_prefix(media_id, "vision:")
 
     extractor.stats["occurrences"] = len(occurrences)
     prev_extracted: ScreenOccurrence | None = None
@@ -758,6 +832,8 @@ def run_vision(
 
 
 def _add_content_reviews(store: Store, media_id: str, occ: ScreenOccurrence, content: ScreenContent) -> None:
+    # この表示期間について作り直すので、古い分だけ先に消す。
+    store.clear_reviews_for_target(media_id, occ.id)
     for region in content.regions:
         if region.unreadable or FLAG_UNREADABLE in region.flags:
             store.add_review(

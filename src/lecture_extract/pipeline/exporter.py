@@ -94,6 +94,7 @@ class Exporter:
             "screen_contents.jsonl": str(self.write_contents_jsonl()),
             "screen_occurrences.jsonl": str(self.write_occurrences_jsonl()),
             "utterances.jsonl": str(self.write_utterances_jsonl()),
+            "alignment_table.jsonl": str(self.write_alignment_table()),
             "transcript.srt": str(self.write_srt()),
         }
         return written
@@ -187,6 +188,20 @@ class Exporter:
                     unknown = note.get("relation_unknown")
                     suffix = "（関係不明）" if unknown else (f"（関係: {relation}）" if relation else "")
                     lines.append(f"- {escape_markdown_text(str(note.get('note', '')))}{suffix}")
+                    # 図で結ばれた要素と向き (設計 6.4)。
+                    if note.get("from") and note.get("to"):
+                        arrow = {"one_way": "→", "two_way": "↔", "none": "—"}.get(
+                            str(note.get("direction", "")), "-"
+                        )
+                        lines.append(
+                            f"  - {escape_markdown_text(str(note['from']))} {arrow} "
+                            f"{escape_markdown_text(str(note['to']))}"
+                        )
+                    if note.get("group"):
+                        lines.append(
+                            "  - まとまり: "
+                            + escape_markdown_text(", ".join(map(str, note["group"][:8])))
+                        )
                 lines.append("")
 
             # 5. 個々の発話
@@ -422,11 +437,25 @@ class Exporter:
             content = self.contents.get(occ.content_id) if occ.content_id else None
             body = content.body_text if content else None
             label = f"`{format_timestamp(occ.start_us)} – {format_timestamp(occ.end_us)}`"
+            change = next(
+                (f.split(":", 1)[1] for f in occ.quality_flags if f.startswith("change:")), ""
+            )
+            mark = {
+                "first": "初出",
+                "repeat": "同じ画面の再表示",
+                "modified": "内容が変わった",
+                "unextracted": "全文未確定",
+            }.get(change, "")
             if body is None:
-                lines.append(f"- {label} 状態 {occ.state_kind}（全文未確定）")
+                lines.append(f"- {label} 状態 {occ.state_kind}（{mark or '全文未確定'}）")
+                continue
+            if change == "repeat":
+                # 再表示は本文を繰り返さない。期間だけ残す (設計 5.6)。
+                lines.append(f"- {label} {mark}")
                 continue
             diff = _short_diff(prev_body, body)
-            lines.append(f"- {label} {escape_markdown_text(diff)}")
+            prefix = f"**{mark}** " if mark else ""
+            lines.append(f"- {label} {prefix}{escape_markdown_text(diff)}")
             # この状態の全文も残す。親ブロックへまとめたことで原文を失わせない。
             fence = fence_for(body)
             lines.append("")
@@ -633,6 +662,52 @@ class Exporter:
                     )
                     + "\n"
                 )
+        return path
+
+    def write_alignment_table(self) -> Path:
+        """表示時刻・画面本文 ID・発話 ID の対応表 (1 行 1 対応)。
+
+        これ 1 本で「この説明のとき何が表示されていたか」をたどれるようにする。
+        本文と発話の原文は持たず、ID と時刻だけを持つ。原文は
+        screen_contents.jsonl / utterances.jsonl 側にあり、二重に保存しない。
+        """
+        path = self.out_dir / "alignment_table.jsonl"
+        with atomic_write(path) as fh:
+            for occ in self.occurrences:
+                content = self.contents.get(occ.content_id) if occ.content_id else None
+                rows = self.alignments_by_occ.get(occ.id, [])
+                base = {
+                    "start_us": occ.start_us,
+                    "end_us": occ.end_us,
+                    "start": format_timestamp(occ.start_us),
+                    "end": format_timestamp(occ.end_us),
+                    "occurrence_id": occ.id,
+                    "content_id": occ.content_id,
+                    "block_id": occ.parent_block_id,
+                    "screen_kind": content.screen_kind if content else None,
+                    "state_kind": occ.state_kind,
+                    "screen_extracted": bool(occ.content_id),
+                }
+                if not rows:
+                    # 発話が重ならない表示期間も 1 行として残す (設計 8.2)。
+                    fh.write(json.dumps({**base, "utterance_id": None}, ensure_ascii=False) + "\n")
+                    continue
+                for a in rows:
+                    utt = self.utt_by_id.get(a.utterance_id)
+                    fh.write(
+                        json.dumps(
+                            {
+                                **base,
+                                "utterance_id": a.utterance_id,
+                                "utterance_start_us": utt.start_us if utt else None,
+                                "utterance_end_us": utt.end_us if utt else None,
+                                "overlap_us": a.overlap_us,
+                                "is_primary": a.is_primary,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
         return path
 
     def write_srt(self) -> Path:

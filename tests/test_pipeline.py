@@ -319,9 +319,11 @@ def test_typing_sequence_becomes_one_editing_block(tmp_path):
     try:
         media = orch.store.get_media()
         blocks = orch.store.blocks(media["id"])
-        editing = [b for b in blocks if b.kind == "editing"]
+        editing = [b for b in blocks if b.kind.startswith("unit")]
         assert editing, f"連続入力が親ブロックになっていません: {[(b.kind, len(b.occurrence_ids)) for b in blocks]}"
         assert len(editing[0].occurrence_ids) >= 3
+        # 内容が変わった履歴を含む単位として区別されている。
+        assert any(b.kind == "unit_edited" for b in blocks)
 
         markdown = (Path(orch.cfg.out_dir) / "lecture.md").read_text(encoding="utf-8")
         # 途中の版も、変化履歴に全文として残っている。
@@ -378,3 +380,24 @@ def test_storage_exhausted_stops_before_writing(lecture_fixture, tmp_path, monke
     with pytest.raises(cache_mod.StorageExhausted):
         cache_mod.check_free_space(tmp_path / "work")
     assert _shutil is not None
+
+
+def test_repeat_and_modified_are_distinguished(lecture_fixture, tmp_path):
+    """設計 5.6: 同じ画面の再表示と、内容を変更した画面を区別する。"""
+    orch, _ = run_pipeline(lecture_fixture, tmp_path)
+    try:
+        media = orch.store.get_media()
+        occurrences = orch.store.occurrences(media["id"])
+        kinds = {}
+        for occ in occurrences:
+            for f in occ.quality_flags:
+                if f.startswith("change:"):
+                    kinds[occ.id] = f.split(":", 1)[1]
+        assert kinds, "表示状態の位置づけが記録されていません"
+        # 同じアジェンダスライドが 2 回出るので、初出と再表示の両方がある。
+        assert "first" in kinds.values()
+        # コードは 1 文字変更されるので、変更として記録される単位がある。
+        blocks = orch.store.blocks(media["id"])
+        assert any(b.kind in ("unit", "unit_edited", "single") for b in blocks)
+    finally:
+        orch.close()

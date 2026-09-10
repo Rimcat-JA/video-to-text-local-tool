@@ -98,6 +98,10 @@ class VisionConfig:
     crop_max_pixels: int = 1_600 * 1_600
     tile_overlap_ratio: float = 0.18  # 設計 6.2: 15-20% を初期候補
     tile_max_height_px: int = 1_100
+    # 切り詰めが起きた場合の再帰分割 (設計 6.2)。切り詰めた側だけを更に分ける。
+    split_max_depth: int = 3  # 最大 8 片まで細かくする
+    split_min_height_px: int = 180  # これ以下は分けない
+    split_join_lines: int = 12  # 結合の照合に使う重複行数
     # 全体パス用の上限。1080p を縮小しないことで、全本文領域の再認識を避ける。
     # 領域別読み取りは常に原寸クロップを使う。
     max_image_long_side: int = 1_920
@@ -131,12 +135,19 @@ class AsrConfig:
 
 @dataclass
 class BlockConfig:
-    """読書ブロック構築 (設計 5.4 / 8.2)。"""
+    """読書ブロック（教材単位）の構築 (設計 5.4 / 8.2)。"""
 
+    # 同じスライド・同じコード領域・同じ文脈が続く範囲をひとつの教材単位にまとめる。
+    group_units: bool = True
+    unit_similarity: float = 0.45  # この類似度以上なら同じ教材の変更とみなす
+    unit_max_gap_us: int = 15_000_000  # これ以上間が空いたら別の教材
+    unit_max_duration_us: int = 900_000_000  # ひとつの単位が長くなりすぎないようにする
+
+    # 旧: 連続入力のまとめ（教材単位の判定に統合済み。設定は互換のため残す）
     group_editing: bool = True
-    editing_similarity: float = 0.72  # この類似度以上で連続入力とみなす
+    editing_similarity: float = 0.72
     editing_max_gap_us: int = 8_000_000
-    editing_min_states: int = 3  # これ未満なら親ブロック化しない
+    editing_min_states: int = 3
     editing_state_max_us: int = 12_000_000
 
 
