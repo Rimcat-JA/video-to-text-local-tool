@@ -151,4 +151,4 @@ Markdown には画像を埋め込みません。根拠画像は `work/frames/` �
 
 ## ライセンス
 
-[docs/LICENSES.md](docs/LICENSES.md) を参照してください。
+本体は MIT ライセンスです（[LICENSE](LICENSE)）。依存するソフトウェアとモデルのライセンスは [docs/LICENSES.md](docs/LICENSES.md) を参照してください。

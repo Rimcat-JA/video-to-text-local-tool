@@ -11,7 +11,7 @@
 
 | 項目 | 値 |
 |---|---|
-| ファイル | `C:\Users\Danir\Videos\Production RAG with LangChain & Vector Databases - Full Course [mHxLXzYjQRE] 1080p.mp4` |
+| ファイル | 英語の技術講義動画（RAG 解説コース）1 本 |
 | 再生時間 | 7 時間 38 分（27,518 秒） |
 | 映像 | H.264 1920x1080 / 30fps 固定 / 825,541 フレーム |
 | 音声 | AAC ステレオ 44.1kHz |
@@ -193,7 +193,7 @@ frame_scan の内訳: 変化候補 34,228 / ポインタ移動 15,007 / カー�
 1. 修正後の 3 分区間で測り直す。
 
 ```bash
-.venv\Scripts\lecture-extract.exe run "C:\Users\Danir\Videos\Production RAG with LangChain & Vector Databases - Full Course [mHxLXzYjQRE] 1080p.mp4" -o out\rag_probe6 --start 0:30:00 --end 0:33:00 --vision-model models\qwen3-vl-8b\Qwen3VL-8B-Instruct-Q4_K_M.gguf --mmproj models\qwen3-vl-8b\mmproj-Qwen3VL-8B-Instruct-F16.gguf --manage-vision-server --asr-model models\whisper\ggml-large-v3-turbo.bin --asr-binary third_party\whisper-bin-x64\Release\whisper-cli.exe --language en --save-config out\rag_probe6\run_config.json
+.venv\Scripts\lecture-extract.exe run "<動画のパス>" -o out\rag_probe6 --start 0:30:00 --end 0:33:00 --vision-model models\qwen3-vl-8b\Qwen3VL-8B-Instruct-Q4_K_M.gguf --mmproj models\qwen3-vl-8b\mmproj-Qwen3VL-8B-Instruct-F16.gguf --manage-vision-server --asr-model models\whisper\ggml-large-v3-turbo.bin --asr-binary third_party\whisper-bin-x64\Release\whisper-cli.exe --language en --save-config out\rag_probe6\run_config.json
 ```
 
 2. `out\rag_probe6\quality_report.md` の性能計測から、1 状態あたりの VLM 時間を確認する。
