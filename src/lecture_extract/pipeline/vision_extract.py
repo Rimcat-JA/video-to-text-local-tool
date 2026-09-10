@@ -74,6 +74,22 @@ def build_body_text(regions: list[Region]) -> str:
     )
 
 
+def _parse_bbox(value: Any) -> list[float]:
+    """bbox を [x0, y0, x1, y1] へ揃える。文字列形式と配列形式の両方を受ける。"""
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.replace("[", "").replace("]", "").split(",")]
+        nums = []
+        for p in parts:
+            try:
+                nums.append(float(p))
+            except ValueError:
+                continue
+        value = nums
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return [0.0, 0.0, 1.0, 1.0]
+    return [float(v) for v in value[:4]]
+
+
 def _clamp_bbox(bbox: list[float], width: int, height: int, padding: float) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = bbox
     if max(abs(v) for v in bbox) <= 1.5:  # 正規化座標
@@ -121,6 +137,30 @@ def merge_tile_lines(acc: list[str], new: list[str], max_overlap: int) -> tuple[
             return acc + new[k:], True
     # 一致しない場合は重複を勝手に削らず、両方を残して未検証と記録する。
     return acc + new, False
+
+
+def _drop_duplicate_regions(regions: list[Region]) -> tuple[list[Region], int]:
+    """同一画面の中で本文が完全に同じ領域を 1 つにまとめる。
+
+    モデルが同じ範囲を複数の領域として繰り返し出力することがある。そのまま
+    残すと本文が二重になる。読み順が先のものを残し、除いた数を返す。
+    """
+    seen: dict[str, Region] = {}
+    out: list[Region] = []
+    dropped = 0
+    for region in sorted(regions, key=lambda r: r.reading_order):
+        key = normalize_for_compare(region.text, is_code=region.kind in CODE_KINDS)
+        if not key.strip():
+            out.append(region)
+            continue
+        if key in seen:
+            dropped += 1
+            kept = seen[key]
+            kept.flags = sorted(set(kept.flags) | {"duplicate_of_removed_region"})
+            continue
+        seen[key] = region
+        out.append(region)
+    return out, dropped
 
 
 def _encode_png(image: np.ndarray) -> bytes:
@@ -327,6 +367,12 @@ class VisionExtractor:
             return content, flags
 
         regions = self._payload_to_regions(payload, width, height, frame_id, attempt_id)
+        regions, dropped = _drop_duplicate_regions(regions)
+        if dropped:
+            # モデルが同じ領域を繰り返し出力することがある。黙って残すと本文が
+            # 二重になるため、除いたうえで除いた事実を記録する。
+            flags.append("duplicate_regions_removed")
+            self.stats["duplicate_regions"] = self.stats.get("duplicate_regions", 0) + dropped
 
         # --- 領域別の原寸クロップ再認識 ---
         downscaled = scale < 0.999
@@ -334,19 +380,22 @@ class VisionExtractor:
             flags.append(FLAG_LOW_RESOLUTION)
         screen_kind_for_crop = payload.get("screen_kind", "other")
         code_screen = screen_kind_for_crop in self.vcfg.crop_reread_screen_kinds
+        # 判読不能の印がある領域を優先し、1 画面あたりの回数に上限を設ける。
+        candidates = []
         for region in regions:
             uncertain = bool(region.unreadable) or FLAG_UNREADABLE in region.flags
-            need = (
-                (region.kind in self.vcfg.crop_reread_kinds and code_screen)
-                or uncertain
-                or (
-                    downscaled
-                    and self.vcfg.crop_reread_all_body_when_downscaled
-                    and region.role == ROLE_MATERIAL_BODY
-                )
+            need = uncertain or (
+                downscaled
+                and self.vcfg.crop_reread_all_body_when_downscaled
+                and region.role == ROLE_MATERIAL_BODY
             )
-            if not need:
-                continue
+            if not need and not self.vcfg.crop_reread_only_uncertain:
+                need = region.kind in self.vcfg.crop_reread_kinds and code_screen
+            if need:
+                area = (region.bbox[2] - region.bbox[0]) * (region.bbox[3] - region.bbox[1])
+                candidates.append((0 if uncertain else 1, -area, region))
+        candidates.sort(key=lambda c: (c[0], c[1]))
+        for _, _, region in candidates[: self.vcfg.crop_reread_max_per_screen]:
             attempt_ids.extend(self._reread_region(image, region, frame_id, image_hash))
 
         screen_kind = payload.get("screen_kind", "other")
@@ -433,8 +482,7 @@ class VisionExtractor:
     ) -> list[Region]:
         regions: list[Region] = []
         for i, raw in enumerate(payload.get("regions") or []):
-            bbox = raw.get("bbox") or [0.0, 0.0, 1.0, 1.0]
-            x0, y0, x1, y1 = _clamp_bbox(list(bbox), width, height, 0.0)
+            x0, y0, x1, y1 = _clamp_bbox(_parse_bbox(raw.get("bbox")), width, height, 0.0)
             region = Region(
                 region_id=new_id("reg"),
                 kind=raw.get("kind", "unknown"),

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v5"
 
 # 設計 6.5 の抽出規約。文言を変える場合は PROMPT_VERSION を上げる。
 EXTRACTION_CONTRACT = """目的は、与えられた画像に実際に表示されている文字の転記である。
@@ -61,15 +61,12 @@ FULL_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "kind": {"type": "string", "enum": _REGION_KINDS},
                     "role": {"type": "string", "enum": _ROLES},
-                    "bbox": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 4,
-                        "maxItems": 4,
-                    },
+                    # 座標は配列ではなく文字列にする。llama.cpp の文法は配列要素ごとに
+                    # 改行と字下げを許すため、数値 4 個で 6 行を消費して出力上限を圧迫する。
+                    "bbox": {"type": "string"},
                     "reading_order": {"type": "integer"},
                     "text": {"type": "string"},
-                    "line_numbers": {"type": "array", "items": {"type": "string"}},
+                    "line_numbers": {"type": "array", "items": {"type": "string"}, "maxItems": 40},
                     "language_hint": {"type": "string"},
                     "flags": {"type": "array", "items": {"type": "string"}},
                     "unreadable": {
@@ -84,8 +81,12 @@ FULL_SCHEMA: dict[str, Any] = {
                 },
                 "required": ["kind", "role", "bbox", "reading_order", "text"],
             },
+            # 文法側で領域数に上限を設ける。指示だけでは同じ領域を繰り返し出力する
+            # 退行を止められず、出力上限に達して本文が失われるため。
+            "maxItems": 8,
         },
         "structure_notes": {
+            "maxItems": 12,
             "type": "array",
             "items": {
                 "type": "object",
@@ -117,7 +118,7 @@ CROP_SCHEMA: dict[str, Any] = {
     "properties": {
         "text": {"type": "string"},
         "lines": {"type": "array", "items": {"type": "string"}},
-        "line_numbers": {"type": "array", "items": {"type": "string"}},
+        "line_numbers": {"type": "array", "items": {"type": "string"}, "maxItems": 40},
         "flags": {"type": "array", "items": {"type": "string"}},
         "unreadable": {
             "type": "array",
@@ -147,7 +148,8 @@ FULL_INSTRUCTION = f"""{EXTRACTION_CONTRACT}
 
 出力規則:
 - regions は画面上のまとまりごとに分ける。reading_order は 0 から始まる読み順。
-- bbox は [x0, y0, x1, y1] を画像の幅・高さで割った 0.0-1.0 の値で表す。
+- bbox は "x0,y0,x1,y1" の形式の文字列。画像の幅・高さで割った 0.0-1.0 の値を
+  カンマ区切りで書く。例: "0.05,0.12,0.95,0.48"
 - role は次で分ける。
   material_body: スライド本文・コード・数式・実行結果など教材そのもの
   material_context: ファイル名・タブ名・行番号など教材の文脈情報
@@ -172,6 +174,8 @@ FULL_INSTRUCTION = f"""{EXTRACTION_CONTRACT}
 出力形式:
 - JSON は詰めて出力する。改行・字下げ・余分な空白を入れない。
   書式にトークンを使うと本文が出力上限に届かなくなる。
+- 領域は最大 8 個まで。画面全体をこの数に収まるようまとめて分ける。
+- 同じ内容を別の領域として繰り返し出力しない。一度書いた文字は再び書かない。
 - 同じ種類の文字が連続する範囲は、行ごとに分けずひとつの領域にまとめる。
   領域を細かく分けるほど座標と属性の繰り返しが増え、本文が入らなくなる。
 

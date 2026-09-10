@@ -166,6 +166,7 @@ class LlamaServerVision:
             "max_tokens": self.cfg.max_tokens,
             "crop_max_tokens": self.cfg.crop_max_tokens,
             "repeat_penalty": self.cfg.repeat_penalty,
+            "dry_multiplier": self.cfg.dry_multiplier,
             "n_ctx": self.cfg.n_ctx,
             "max_image_long_side": self.cfg.max_image_long_side,
             "image_min_tokens": self.cfg.image_min_tokens,
@@ -227,6 +228,9 @@ class LlamaServerVision:
             # 繰り返しループに入ったときの損失時間を抑える目的も兼ねる。
             "max_tokens": self.cfg.max_tokens if kind == "full" else self.cfg.crop_max_tokens,
             "repeat_penalty": self.cfg.repeat_penalty,
+            "dry_multiplier": self.cfg.dry_multiplier,
+            "dry_base": self.cfg.dry_base,
+            "dry_allowed_length": self.cfg.dry_allowed_length,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "screen_extraction", "schema": schema, "strict": True},
@@ -347,8 +351,13 @@ def validate_payload(payload: Any, kind: str) -> str:
             if not isinstance(region.get("text"), str):
                 return f"regions[{i}].text が文字列ではありません"
             bbox = region.get("bbox")
-            if not (isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(v, (int, float)) for v in bbox)):
-                return f"regions[{i}].bbox が 4 個の数値ではありません"
+            ok = isinstance(bbox, list) and len(bbox) == 4 and all(
+                isinstance(v, (int, float)) for v in bbox
+            )
+            if isinstance(bbox, str):
+                ok = len([p for p in bbox.split(",") if p.strip()]) >= 4
+            if not ok:
+                return f"regions[{i}].bbox の形式が不正です"
         if not isinstance(payload.get("screen_kind"), str):
             return "screen_kind がありません"
     else:

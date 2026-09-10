@@ -64,7 +64,7 @@ class VisionConfig:
     model_alias: str = ""
     manage_server: bool = False  # True なら llama-server を起動・停止まで面倒を見る
     server_binary: str = "llama-server"
-    n_ctx: int = 8192
+    n_ctx: int = 16384
     n_gpu_layers: int = 99
     # llama.cpp が Qwen-VL について警告する下限。文字の読み取り精度に効く。
     # 0 なら指定しない (ランタイムの既定に任せる)。
@@ -77,6 +77,11 @@ class VisionConfig:
     crop_max_tokens: int = 1024
     # 同じ記号を延々と生成する退行を抑える。1.0 で無効。
     repeat_penalty: float = 1.05
+    # 繰り返した並びを抑える DRY 抑制。allowed_length より長い繰り返しに罰則をかける。
+    # 0 で無効。短い繰り返し（コードの同一行など）は許す。
+    dry_multiplier: float = 0.8
+    dry_base: float = 1.75
+    dry_allowed_length: int = 8
     request_timeout_s: int = 600
     concurrency: int = 1  # 設計 3.3: GPU 1 枚につき重い推論は 1 件
     crop_reread_kinds: list[str] = field(
@@ -89,6 +94,11 @@ class VisionConfig:
         default_factory=lambda: ["code_editor", "terminal", "browser", "mixed"]
     )
     crop_reread_all_body_when_downscaled: bool = True
+    # 1 画面あたりのクロップ再認識の上限。実測では、コード画面で全領域を読み直すと
+    # 1 画面 22 回に達し、その 68% が全画面パスと食い違って断片化した。
+    # 判読不能の印がある領域を優先し、それ以外は読み直さない。
+    crop_reread_max_per_screen: int = 3
+    crop_reread_only_uncertain: bool = True
     # 設計 5.2 第 2 段階: 変化した領域だけを読み直し、文字が変わったか確かめる。
     region_check: bool = True
     region_check_max_area: float = 0.15  # 画面に対するこの割合以下の変化だけを局所判定にする
