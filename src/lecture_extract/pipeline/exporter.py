@@ -79,8 +79,13 @@ class Exporter:
         self.media_id = media["id"]
         self.out_dir = Path(cfg.out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.contents: dict[str, ScreenContent] = {c.id: c for c in store.all_contents()}
         self.occurrences: list[ScreenOccurrence] = store.occurrences(self.media_id)
+        # 現在どの表示期間からも参照されていない本文は、過去の実行の残骸なので
+        # 出力に含めない。正本 (SQLite) には抽出履歴として残す (設計 9.1)。
+        referenced = {o.content_id for o in self.occurrences if o.content_id}
+        self.contents: dict[str, ScreenContent] = {
+            c.id: c for c in store.all_contents() if c.id in referenced
+        }
         self.occ_by_id = {o.id: o for o in self.occurrences}
         self.blocks = store.blocks(self.media_id)
         self.alignments_by_occ, self.utt_by_id = utterances_for_occurrence(store, self.media_id)

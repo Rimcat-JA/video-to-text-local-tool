@@ -52,8 +52,11 @@ class ProfileExporter:
         self.media = media
         self.media_id = media["id"]
         self.out_dir = Path(cfg.out_dir)
-        self.contents: dict[str, ScreenContent] = {c.id: c for c in store.all_contents()}
         self.occurrences = store.occurrences(self.media_id)
+        referenced = {o.content_id for o in self.occurrences if o.content_id}
+        self.contents: dict[str, ScreenContent] = {
+            c.id: c for c in store.all_contents() if c.id in referenced
+        }
         self.occ_by_id = {o.id: o for o in self.occurrences}
         self.blocks = store.blocks(self.media_id)
         self.utt_by_id = {u.id: u for u in store.utterances(self.media_id)}

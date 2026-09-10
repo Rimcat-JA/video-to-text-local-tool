@@ -145,22 +145,67 @@ def _drop_duplicate_regions(regions: list[Region]) -> tuple[list[Region], int]:
     モデルが同じ範囲を複数の領域として繰り返し出力することがある。そのまま
     残すと本文が二重になる。読み順が先のものを残し、除いた数を返す。
     """
-    seen: dict[str, Region] = {}
     out: list[Region] = []
     dropped = 0
+    # 判定は空白を無視して行う。改行や字下げだけが違う重複を取り逃がさないため。
+    # 残す側の原文はそのまま (字下げを保持する)。
+    keys: list[tuple[str, Region]] = []
     for region in sorted(regions, key=lambda r: r.reading_order):
-        key = normalize_for_compare(region.text, is_code=region.kind in CODE_KINDS)
-        if not key.strip():
+        key = "".join(region.text.split())
+        if not key:
             out.append(region)
             continue
-        if key in seen:
+        duplicate = None
+        for prev_key, prev_region in keys:
+            if key == prev_key:
+                duplicate = prev_region
+                break
+            # 一方が他方に完全に含まれ、長さが近い場合も重複とみなす。
+            # 同じ範囲を途中まで書いた領域が別に出てくることがある。
+            short, long_ = (key, prev_key) if len(key) <= len(prev_key) else (prev_key, key)
+            if short in long_ and len(short) >= len(long_) * 0.5:
+                duplicate = prev_region if len(key) <= len(prev_key) else None
+                if duplicate is None:
+                    # 今回の方が長いので、前に残した短い方を差し替える。
+                    out = [r for r in out if r is not prev_region]
+                    keys = [(k, r) for k, r in keys if r is not prev_region]
+                    dropped += 1
+                    region.flags = sorted(set(region.flags) | {"duplicate_of_removed_region"})
+                break
+        if duplicate is not None:
             dropped += 1
-            kept = seen[key]
-            kept.flags = sorted(set(kept.flags) | {"duplicate_of_removed_region"})
+            duplicate.flags = sorted(set(duplicate.flags) | {"duplicate_of_removed_region"})
             continue
-        seen[key] = region
+        keys.append((key, region))
         out.append(region)
     return out, dropped
+
+
+def _flag_possible_duplicates(regions: list[Region], threshold: float = 0.85) -> int:
+    """よく似た領域の組に印を付ける。取り除きはしない。
+
+    文字単位の差がある重複 (同じ範囲を 2 回読み、読み取りが少し違う) を
+    自動で統合すると、本当に似ているだけの別内容 (例: 隣り合う 2 つの
+    チャンクの比較) を失う。判断は人に委ね、印だけを残す。
+    """
+    from difflib import SequenceMatcher
+
+    marked = 0
+    texts = [("".join(r.text.split()), r) for r in regions if r.text.strip()]
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            a, ra = texts[i]
+            b, rb = texts[j]
+            if not a or not b:
+                continue
+            if min(len(a), len(b)) < 40:
+                continue
+            if SequenceMatcher(None, a, b).ratio() >= threshold:
+                for r in (ra, rb):
+                    if "possible_duplicate_region" not in r.flags:
+                        r.flags = sorted(set(r.flags) | {"possible_duplicate_region"})
+                        marked += 1
+    return marked
 
 
 def _encode_png(image: np.ndarray) -> bytes:
@@ -368,6 +413,8 @@ class VisionExtractor:
 
         regions = self._payload_to_regions(payload, width, height, frame_id, attempt_id)
         regions, dropped = _drop_duplicate_regions(regions)
+        if _flag_possible_duplicates(regions):
+            flags.append("possible_duplicate_regions")
         if dropped:
             # モデルが同じ領域を繰り返し出力することがある。黙って残すと本文が
             # 二重になるため、除いたうえで除いた事実を記録する。
