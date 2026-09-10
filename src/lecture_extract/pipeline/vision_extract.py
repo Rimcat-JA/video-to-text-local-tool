@@ -852,18 +852,8 @@ def run_vision(
             extractor.stats["skipped_short"] += 1
             occ.quality_flags = sorted(set(occ.quality_flags) | {FLAG_NOT_EXTRACTED, "short_or_transition"})
             store.upsert_occurrence(occ)
-            store.add_review(
-                ReviewItem(
-                    id=new_id("rev"),
-                    media_id=media_id,
-                    target_kind="occurrence",
-                    target_ref=occ.id,
-                    reason="vision:not_extracted_short_state",
-                    detail=(
-                        f"表示時間 {(occ.end_us - occ.start_us) / 1000:.0f}ms の状態は全文未確定のまま期間だけ残しています。"
-                    ),
-                )
-            )
+            # 短時間表示を 1 件ずつ確認項目にすると数万件になり、品質報告が読めなくなる。
+            # 期間は表示状態と時間軸の網羅に残っているので、件数だけを集計する。
             done_ids.add(occ.id)
             continue
 

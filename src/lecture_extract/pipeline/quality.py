@@ -146,8 +146,10 @@ def write_quality_report(
             lines.append(f"  - ...ほか {len(q['unextracted_spans']) - 50} 件")
     lines.append("")
     lines.append(
-        f"- 0.5 秒未満などの短時間表示: {q['short_states']} 件（うち全文未確定 {q['short_states_unextracted']} 件）"
+        f"- 短時間表示・遷移として抽出対象外にした状態: {q['short_states']} 件"
+        f"（うち全文未確定 {q['short_states_unextracted']} 件）"
     )
+    lines.append("  これらは期間と境界だけを記録しています。個々の期間は screen_occurrences.jsonl にあります。")
     lines.append("  短時間表示は別集計です。未回収・未認識を隠していません（設計 14.2）。")
     lines.append("")
 
